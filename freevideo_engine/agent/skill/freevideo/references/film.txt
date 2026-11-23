@@ -1,0 +1,13 @@
+# Films of several shots
+
+Use this when the piece runs longer than about 20 seconds, changes place or costume, or needs shots chosen or reshot separately; otherwise one `freevideo_generate` with `[Shot N]` cuts is enough (see "Making a short drama" in SKILL.md). Each shot is one generation of 15 to 20 seconds; the device limit is only a cap, and a shot with a cast card cannot be longer than one generation on this computer.
+
+1. Reuse or make cast cards: `freevideo_cast_list` first (reuse a matching card), then `freevideo_cast_create`; `freevideo_cast_generate` makes reference pictures when the user gave none.
+2. `freevideo_drama_plan` previews the shots without starting.
+3. `freevideo_drama_start` creates the durable film. Read it with `freevideo_drama_get` (use `since` and `wait`).
+4. For each shot whose takes are done: `freevideo_drama_sheet` shows timed frames and the previous chosen last frame. Look, then `freevideo_drama_choose`. A continuation can only start after the previous shot is chosen.
+5. A take that missed: `freevideo_drama_reshoot` with a short note on what to change, then review the sheet again.
+6. When every shot is chosen: `freevideo_drama_finish`, then read the film until its output is ready.
+7. The output's `project_id` is the film opened as an editing project, one part per shot. Finish the sound there with `freevideo_project_finish_sound` (see references/edit.txt); the MP4 stays as it was.
+
+Only the user may pause or resume a film. If it is paused, stop acting and long-wait.

@@ -1,0 +1,423 @@
+"""Observed capacity, including live usage and enclosing Linux RAM limits."""
+from __future__ import annotations
+from dataclasses import asdict, dataclass
+import importlib.util
+import platform
+import re
+import subprocess
+from pathlib import Path
+
+GiB = 1 << 30
+
+
+@dataclass(frozen=True)
+class Hardware:
+    gpu_name: str
+    capability: tuple[int, int]
+    vram_total: int
+    vram_free: int
+    ram_total: int
+    ram_available: int
+    system: str = 'Linux'
+    torch_version: str = ''
+    cuda_version: str = ''
+    cgroup_ram_limit: int | None = None
+    gpu_uuid: str = ''
+    driver_version: str = ''
+    ram_physical_available: int | None = None
+    ram_commit_available: int | None = None
+
+    @property
+    def architecture(self):
+        if len(self.capability) != 2 or any(type(v) is not int for v in self.capability):
+            return 'other'
+        if (8, 0) <= self.capability < (8, 9):
+            return 'ampere'
+        if self.capability == (8, 9):
+            return 'ada'
+        if self.capability[0] == 9:
+            return 'hopper'
+        if self.capability in ((10, 0), (10, 3)):
+            return 'blackwell-datacenter'
+        if self.capability == (11, 0):
+            return 'blackwell-tegra'
+        if self.capability == (12, 1):
+            return 'blackwell-unified'
+        if self.capability[0] == 12:
+            return 'blackwell-rtx'
+        return 'other'
+
+    def cuda_compatibility(self):
+        """The engine's arithmetic floor, not a GPU model or performance allowlist.
+
+        Passing this check permits setup. The installed Torch, Triton and
+        attention kernels must still execute successfully on the selected GPU.
+        CPU architecture/platform and driver requirements are checked separately.
+        """
+        capability = self.capability
+        known = (len(capability) == 2 and all(type(v) is int for v in capability)
+                 and capability[0] > 0 and 0 <= capability[1] <= 9)
+        sm = '%d%d' % capability if known else 'unknown'
+        admitted = known and capability >= (8, 0)
+        status = ('probe-required' if admitted else
+                  'CUDA_ARCH_UNSUPPORTED' if known else 'CUDA_CAPABILITY_UNKNOWN')
+        detail = '%s (SM%s; compute capability %s; driver %s)' % (
+            self.gpu_name, sm, '.'.join(map(str, capability)) if known else 'unknown',
+            self.driver_version or 'unknown')
+        error = None
+        if not admitted:
+            if known:
+                error = ('[CUDA_ARCH_UNSUPPORTED] ' + detail + '. FreeVideo requires '
+                         'native BF16 GPU computation (compute capability 8.0 / SM80 or newer). '
+                         'This GPU is below that hardware requirement; a driver update cannot add it.')
+            else:
+                error = ('[CUDA_CAPABILITY_UNKNOWN] Could not determine the CUDA architecture of '
+                         + detail + '. GPU detection did not return a valid compute capability. '
+                         'Retry detection or export the report for the driver query result.')
+        return dict(status=status, admitted=admitted, gpu_name=self.gpu_name,
+                    capability=list(capability), minimum_capability=[8, 0],
+                    driver_version=self.driver_version, architecture=self.architecture,
+                    linear_compute=('bf16-weight-only' if capability < (8, 9) else 'native-fp8') if admitted else None,
+                    validation='Actual linear and attention kernel probes are required before readiness.', error=error)
+
+    def to_dict(self):
+        return dict(asdict(self), architecture=self.architecture)
+
+    @classmethod
+    def from_dict(cls, value):
+        fields = {k: v for k, v in value.items() if k != 'architecture'}
+        fields['capability'] = tuple(fields['capability'])
+        return cls(**fields)
+
+
+def cgroup_memory(proc=Path('/proc')):
+    """Live v1/v2 usage, including file cache and every visible ancestor cap."""
+    result = dict(limit_bytes=None, available_bytes=None, reclaimable_available_bytes=None,
+                  groups=[], complete=True)
+    if platform.system() != 'Linux':
+        return result
+    try:
+        groups = {}
+        for line in (proc / 'self/cgroup').read_text(encoding='utf-8').splitlines():
+            hierarchy, controllers, path = line.split(':', 2)
+            if hierarchy == '0' and not controllers:
+                groups[2] = Path(path)
+            elif 'memory' in controllers.split(','):
+                groups[1] = Path(path)
+        mounts = (proc / 'self/mountinfo').read_text(encoding='utf-8').splitlines()
+        seen = set()
+        for line in mounts:
+            before, after = line.split(' - ', 1)
+            fields, filesystem = before.split(), after.split()
+            version = 2 if filesystem[0] == 'cgroup2' else 1 if filesystem[0] == 'cgroup' and 'memory' in filesystem[2].split(',') else None
+            if version not in groups:
+                continue
+            decode = lambda value: Path(re.sub(r'\\([0-7]{3})', lambda m: chr(int(m[1], 8)), value))
+            mount_root, root = decode(fields[3]), decode(fields[4])
+            group = groups[version]
+            relative = group.relative_to(mount_root) if group == mount_root or mount_root in group.parents else Path(str(group).lstrip('/'))
+            current = root / relative
+            for directory in (current, *current.parents):
+                if (directory != root and root not in directory.parents) or directory in seen:
+                    continue
+                seen.add(directory)
+                limit_file = directory / ('memory.max' if version == 2 else 'memory.limit_in_bytes')
+                if not limit_file.is_file():
+                    continue
+                raw = limit_file.read_text(encoding='utf-8').strip()
+                limit = None if raw == 'max' or int(raw) >= 1 << 60 else int(raw)
+                usage_file = directory / ('memory.current' if version == 2 else 'memory.usage_in_bytes')
+                try:
+                    used = int(usage_file.read_text(encoding='utf-8'))
+                except (OSError, ValueError):
+                    used = None
+                    result['complete'] = False
+                try:
+                    stats = dict((key, int(value)) for key, value in
+                                 (line.split() for line in (directory / 'memory.stat').read_text(encoding='utf-8').splitlines()))
+                except (OSError, ValueError):
+                    stats = {}
+                def metric(v2, v1):
+                    return stats.get(v2) if version == 2 else stats.get('total_' + v1, stats.get(v1))
+                entry = dict(version=version, limit_bytes=limit, current_bytes=used,
+                    available_bytes=max(0, limit-used) if limit is not None and used is not None else 0 if limit is not None else None,
+                    file_cache_bytes=metric('file', 'cache'), anonymous_bytes=metric('anon', 'rss'),
+                    shmem_bytes=metric('shmem', 'shmem'), dirty_bytes=metric('file_dirty', 'dirty'),
+                    writeback_bytes=metric('file_writeback', 'writeback'),
+                    unevictable_bytes=metric('unevictable', 'unevictable'))
+                # A memory.max charge is not all irreclaimable working memory:
+                # immutable mapped model pages can be reclaimed and read again.
+                # Keep raw headroom for download throttling and hard accounting.
+                # Inference may credit only clean filesystem pages; missing
+                # counters, tmpfs/shared pages, dirty data and locked pages earn
+                # no credit. This estimate never changes the kernel's limit.
+                names = ('file_cache_bytes', 'shmem_bytes', 'dirty_bytes',
+                         'writeback_bytes', 'unevictable_bytes')
+                complete = used is not None and all(type(entry[key]) is int and entry[key] >= 0 for key in names)
+                clean = max(0, min(used, entry['file_cache_bytes']) - sum(entry[key] for key in names[1:])) if complete else 0
+                entry['reclaimable_file_bytes'] = clean
+                entry['reclaimable_available_bytes'] = (min(limit, entry['available_bytes'] + clean)
+                    if limit is not None else None)
+                result['groups'].append(entry)
+    except (OSError, ValueError, IndexError):
+        result['complete'] = False
+    limited = [group for group in result['groups'] if group['limit_bytes'] is not None]
+    if limited:
+        result.update(limit_bytes=min(group['limit_bytes'] for group in limited),
+                      available_bytes=min(group['available_bytes'] for group in limited),
+                      reclaimable_available_bytes=min(group['reclaimable_available_bytes'] for group in limited))
+    return result
+
+
+def cgroup_capacity(*, include_reclaimable=False):
+    state = cgroup_memory()
+    return state['limit_bytes'], state.get('reclaimable_available_bytes', state['available_bytes']) if include_reclaimable else state['available_bytes']
+
+
+# Names the card and reads its live memory through the driver alone, in the same
+# primary context torch would open, without importing torch.
+_DRIVER_PROBE = r"""
+import ctypes, json, os, sys
+if os.name == 'nt':
+    lib = ctypes.WinDLL('nvcuda')
+    from ctypes import wintypes
+    path = ctypes.create_unicode_buffer(1024)
+    ctypes.windll.kernel32.GetModuleFileNameW.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+    ctypes.windll.kernel32.GetModuleFileNameW(lib._handle, path, 1024)
+    library = path.value
+else:
+    lib = ctypes.CDLL('libcuda.so.1')
+    library = ''
+    for line in open('/proc/self/maps', encoding='utf-8'):
+        if '/libcuda.so' in line:
+            library = line.split(None, 5)[-1].strip()
+            break
+def ok(code):
+    if code:
+        raise RuntimeError(code)
+ok(lib.cuInit(0))
+device = ctypes.c_int()
+ok(lib.cuDeviceGet(ctypes.byref(device), 0))
+name = ctypes.create_string_buffer(256)
+ok(lib.cuDeviceGetName(name, 256, device))
+major, minor = ctypes.c_int(), ctypes.c_int()
+ok(lib.cuDeviceGetAttribute(ctypes.byref(major), 75, device))
+ok(lib.cuDeviceGetAttribute(ctypes.byref(minor), 76, device))
+raw = (ctypes.c_ubyte * 16)()
+ok(lib.cuDeviceGetUuid(raw, device))
+context = ctypes.c_void_p()
+ok(lib.cuDevicePrimaryCtxRetain(ctypes.byref(context), device))
+ok(lib.cuCtxSetCurrent(context))
+free, total = ctypes.c_size_t(), ctypes.c_size_t()
+ok(lib.cuMemGetInfo_v2(ctypes.byref(free), ctypes.byref(total)))
+print(json.dumps(dict(name=name.value.decode('utf-8'), capability=[major.value, minor.value],
+                      uuid=bytes(raw).hex(), free=free.value, total=total.value, library=library)))
+"""
+
+
+def _static_cache_path():
+    """One saved copy per interpreter. The host (ComfyUI's Python) and the engine's own Python both probe, and the
+    saved key names the interpreter: sharing one file, each overwrote the other's copy, so nearly every video
+    request paid the full torch probe again (1.3-4 s, a new process importing torch and starting CUDA)."""
+    import hashlib
+    import sys
+    from .paths import data_root
+    name = hashlib.sha256(sys.executable.encode('utf-8', 'surrogatepass')).hexdigest()[:16]
+    return data_root() / 'tuning' / ('hardware-static-%s.json' % name)
+
+
+def _static_key(observed):
+    """What the installed torch and driver are; any change makes the saved copy unusable."""
+    import importlib.metadata
+    import importlib.util
+    import sys
+    if not observed['library']:
+        raise ValueError('driver library path unknown')
+    library = Path(observed['library'])
+    spec = importlib.util.find_spec('torch')
+    version = Path(spec.origin).with_name('version.py')
+    return dict(python=sys.executable, torch=importlib.metadata.version('torch'),
+                torch_file=version.stat().st_mtime_ns, library=str(library.resolve()),
+                library_size=library.stat().st_size, library_time=library.stat().st_mtime_ns,
+                name=observed['name'], capability=list(observed['capability']), uuid=observed['uuid'], total=observed['total'])
+
+
+def _light_hardware():
+    """The Hardware a torch probe would report, or None when it must run.
+
+    Card identity and total memory come from the driver each time; only what
+    cannot change without a torch or driver replacement (their version strings)
+    is reused from the last full probe. Free memory and RAM are always read now.
+    """
+    import json
+    import sys
+    from . import subprocess_output
+    try:
+        # No saved copy (first run, or a machine that is not an NVIDIA CUDA one): skip the driver call.
+        saved = json.loads(_static_cache_path().read_text(encoding='utf-8'))
+        result = subprocess_output.run_python([sys.executable, '-c', _DRIVER_PROBE], capture_output=True)
+        if result.returncode:
+            return None
+        observed = json.loads(result.stdout.strip().splitlines()[-1])
+        key = _static_key(observed)
+        if saved.get('key') != key:
+            return None
+        static = saved['static']
+        text = observed['uuid']
+        uuid = 'GPU-%s-%s-%s-%s-%s' % (text[:8], text[8:12], text[12:16], text[16:20], text[20:])
+        if static['gpu_uuid'] != uuid:
+            return None
+        return Hardware(observed['name'], tuple(observed['capability']), observed['total'], observed['free'], 0, 0,
+                        platform.system(), static['torch_version'], static['cuda_version'], None, uuid,
+                        static['driver_version'], None, None)
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError, ImportError, subprocess.SubprocessError):
+        return None
+
+
+def _save_static(observed):
+    """Remember the version strings of a full probe for later light ones."""
+    import json
+    import os
+    import subprocess
+    import sys
+    from . import subprocess_output
+    try:
+        if observed.cuda_version in ('', 'None') or not observed.gpu_uuid.startswith('GPU-'):
+            # A ROCm torch (no CUDA version) or a MIG slice: the driver call cannot name this
+            # device, so keep no copy, and drop one left by an earlier card.
+            _static_cache_path().unlink(missing_ok=True)
+            return
+        result = subprocess_output.run_python([sys.executable, '-c', _DRIVER_PROBE], capture_output=True)
+        if result.returncode:
+            return
+        driver = json.loads(result.stdout.strip().splitlines()[-1])
+        key = _static_key(driver)
+        text = driver['uuid']
+        if observed.gpu_uuid != 'GPU-%s-%s-%s-%s-%s' % (text[:8], text[8:12], text[12:16], text[16:20], text[20:]) \
+                or (observed.gpu_name, tuple(observed.capability), observed.vram_total) != (
+                    driver['name'], tuple(driver['capability']), driver['total']):
+            return
+        path = _static_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name('%s.%d.tmp' % (path.name, os.getpid()))
+        temporary.write_text(json.dumps(dict(key=key, static=dict(
+            gpu_uuid=observed.gpu_uuid, torch_version=observed.torch_version, cuda_version=observed.cuda_version,
+            driver_version=observed.driver_version))), encoding='utf-8')
+        os.replace(temporary, path)
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError, ImportError, subprocess.SubprocessError):
+        pass
+
+
+def detect():
+    # End the detector's CUDA context before starting the model worker. The
+    # lightweight parent must not keep another GPU context or Torch heap alive.
+    import json
+    import subprocess
+    import sys
+    from . import subprocess_output
+    observed = _light_hardware()
+    if observed is None:
+        # The probe finds this source itself: ComfyUI loads the engine by file location and starts without
+        # PYTHONPATH, and a portable Python's ._pth ignores it anyway.
+        code = ('import json, sys; sys.path.insert(0, %r); from freevideo_engine.hardware import _detect_local; '
+                'print(json.dumps(_detect_local().to_dict()))' % str(Path(__file__).resolve().parents[1]))
+        result = subprocess_output.run_python([sys.executable, '-c', code], capture_output=True)
+        if result.returncode:
+            error = RuntimeError('Hardware detection failed: ' + result.stderr[-2000:])
+            # The probe imports torch; a damaged library can end it without a word
+            # (a truncated one is a bus error on Linux). See runtime_libraries.
+            error.torch_probe_failed = True
+            raise error
+        observed = Hardware.from_dict(json.loads(result.stdout.strip().splitlines()[-1]))
+        _save_static(observed)
+    # The isolated torch probe has exited. Its temporary Python/CUDA host heap
+    # must not be subtracted again from the future worker's whole-process RAM
+    # allowance. Refresh RAM in the lightweight controller after that exit.
+    from dataclasses import replace
+    from .system import system_memory
+    memory = system_memory()
+    limit, available = cgroup_capacity(include_reclaimable=True)
+    return replace(observed, ram_total=memory['total_bytes'],
+                   ram_available=min(memory['available_bytes'], available) if available is not None else memory['available_bytes'],
+                   cgroup_ram_limit=limit, ram_physical_available=memory.get('physical_available_bytes'),
+                   ram_commit_available=memory.get('commit_available_bytes'))
+
+
+def _detect_local():
+    from .system import system_memory, nvidia_smi
+    from . import subprocess_output
+    import subprocess
+    import torch
+    if not torch.cuda.is_available():
+        # Only a missing nvidia-smi means there is no driver. A query that fails
+        # (timeout, driver/library mismatch, unreadable output) is an installed
+        # driver whose CUDA did not start, so it must not ask for an install.
+        diagnosis = '[CUDA_INIT_FAILED] NVIDIA driver query failed.'
+        try:
+            executable = nvidia_smi()
+        except Exception:
+            diagnosis = 'NVIDIA driver/nvidia-smi is missing. Install NVIDIA driver 580+ and restart before setup.'
+        else:
+            try:
+                query = [executable, '--query-gpu=name,driver_version', '--format=csv,noheader']
+                row = subprocess_output.output_external(query, stderr=subprocess.DEVNULL, timeout=5).strip().splitlines()[0]
+                model, driver = (value.strip() for value in row.rsplit(',', 1))
+                model = re.sub(r'[()\r\n]', '', model).strip()
+                major = int(driver.split('.')[0])
+                if major < 580:
+                    diagnosis = ('NVIDIA driver %s (%s) is older than 580, the minimum for the CUDA 13 encoder; update the driver first.'
+                                 % (driver, model))
+                else:
+                    diagnosis = '[CUDA_INIT_FAILED] NVIDIA driver %s (%s).' % (driver, model)
+            except Exception:
+                # Diagnostics must never replace the original CUDA failure.
+                pass
+        message = 'A CUDA GPU is required for VDN generation; plan --hardware-json can inspect presets offline.'
+        try:
+            # is_available() reports only False; init() retains PyTorch's reason.
+            torch.cuda.init()
+        except Exception as error:
+            message += ' CUDA initialization error: ' + str(error)
+        # detect() retains only the final 2000 stderr characters. Keep the
+        # classification and GPU identity after the potentially long raw error.
+        raise RuntimeError(message + '\n' + diagnosis) from None
+    index = torch.cuda.current_device()
+    free, total = torch.cuda.mem_get_info(index)
+    ram = system_memory()
+    cap, available = cgroup_capacity(include_reclaimable=True)
+    uuid = str(getattr(torch.cuda.get_device_properties(index), 'uuid', ''))
+    if uuid and not uuid.startswith(('GPU-', 'MIG-')):
+        uuid = 'GPU-' + uuid
+    driver = ''
+    try:
+        query = [nvidia_smi(), '--query-gpu=driver_version', '--format=csv,noheader']
+        if uuid:
+            query += ['--id=' + uuid]
+        driver = subprocess_output.output_external(query, stderr=subprocess.DEVNULL, timeout=5).strip().splitlines()[0]
+    except (OSError, RuntimeError, subprocess.SubprocessError, IndexError):
+        pass
+    return Hardware(torch.cuda.get_device_name(index), torch.cuda.get_device_capability(index),
+                    total, free, ram['total_bytes'], min(ram['available_bytes'], available) if available is not None else ram['available_bytes'],
+                    platform.system(), str(torch.__version__), str(torch.version.cuda), cap, uuid, driver,
+                    ram.get('physical_available_bytes'), ram.get('commit_available_bytes'))
+
+
+def installed_backends():
+    import importlib.metadata
+    result = {'cudnn', 'torch-flash'}
+    for name, module, distribution in [('sage2', 'sageattention', 'sageattention'), ('fa2', 'flash_attn_2_cuda', 'flash-attn')]:
+        try:
+            if importlib.metadata.version(distribution).startswith('2.') and importlib.util.find_spec(module) is not None:
+                result.add(name)
+        except (ImportError, ModuleNotFoundError, ValueError):
+            pass
+    spec = importlib.util.find_spec('flash_attn')
+    if spec and any((Path(p) / 'cute' / 'interface.py').is_file() for p in spec.submodule_search_locations or []):
+        result.add('fa4')
+    try:
+        distribution = importlib.metadata.distribution('flash-attn-4')
+        if Path(distribution.locate_file('flash_attn/cute/interface.py')).is_file():
+            result.add('fa4')
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    return result

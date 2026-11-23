@@ -1,0 +1,403 @@
+"""Keep the ComfyUI workflow inside saved videos.
+
+ComfyUI's own video nodes store the prompt and the workflow as MP4 metadata
+(QuickTime keys, moov first). The frontend reads those two keys when a video is
+dropped on the canvas, so a FreeVideo result restores its graph the same way.
+"""
+import hashlib
+import json
+import logging
+import os
+from pathlib import Path
+import shutil
+import threading
+import time
+import uuid
+from . import disk_space
+
+BACKFILL_MARKER = '.workflow-backfill.json'
+BACKUP_NAME = 'video.before-workflow.mp4'
+
+
+def _room(path, size):
+    """A rewrite needs the copy and the backup beside the original, plus some headroom."""
+    return disk_space.free_bytes(path.parent) >= 2 * size + 512 * 1024 * 1024
+
+
+def embed_comfy_metadata(path, *, prompt=None, workflow=None, backup=None, exact_timescale=None):
+    """Rewrite the MP4 at `path` with the graph in its metadata, copying the
+    streams. The new file replaces the original only after every audio and video
+    packet matches the original byte for byte and the graph reads back; with
+    `backup`, the original is first kept under that name. Returns True when the
+    file was rewritten; otherwise the video is left exactly as it was."""
+    tags = {key: json.dumps(value) for key, value in (('prompt', prompt), ('workflow', workflow)) if value is not None}
+    if not tags:
+        return False
+    path = Path(path)
+    backup = Path(backup) if backup is not None else None
+    temporary = path.with_name(f'{path.stem}.{uuid.uuid4().hex[:8]}.metadata{path.suffix}')
+    made_backup = False
+    try:
+        import av
+        size = path.stat().st_size
+        if backup is not None and backup.exists():
+            logging.info('FreeVideo left %s unchanged: %s already exists.', path, backup.name)
+            return False
+        if not _room(path, size):
+            logging.info('FreeVideo left %s unchanged: not enough free disk space.', path)
+            return False
+        # faststart puts moov, and with it the metadata, before the media data.
+        with av.open(str(path)) as source, av.open(str(temporary), 'w', format='mp4',
+                options={'movflags': 'use_metadata_tags+faststart',
+                         **({'video_track_timescale': str(exact_timescale), 'movie_timescale': str(exact_timescale)}
+                            if exact_timescale is not None else {})}) as target:
+            if not source.streams or any(stream.type not in ('video', 'audio') or stream.codec_context is None
+                                         for stream in source.streams):
+                raise ValueError('Only videos with nothing but audio and video streams are rewritten')
+            for key, value in tags.items():
+                target.metadata[key] = value
+            streams = {stream: _copy_stream(target, stream) for stream in source.streams}
+            for packet in source.demux(*streams):
+                if packet.dts is not None:
+                    packet.stream = streams[packet.stream]
+                    target.mux(packet)
+        if _media(temporary) != _media(path):
+            raise ValueError('The rewritten video does not match the original')
+        if exact_timescale is not None and _timing(temporary) != _timing(path):
+            raise ValueError('The rewritten original soundtrack changed its timing')
+        with av.open(str(temporary)) as check:
+            if any(check.metadata.get(key) != value for key, value in tags.items()):
+                raise ValueError('The workflow did not read back')
+        if backup is not None:
+            made_backup = True
+            try:
+                os.link(path, backup)  # no copy: the original's data stays with the backup name
+            except OSError:
+                shutil.copy2(path, backup)
+            if backup.stat().st_size != size:
+                raise ValueError('The backup is incomplete')
+        original = path.stat()
+        os.replace(temporary, path)
+        _restore_times(path, original)
+        return True
+    except Exception:
+        logging.warning('FreeVideo could not store the workflow in %s; the video is unchanged.', path, exc_info=True)
+        temporary.unlink(missing_ok=True)
+        if made_backup and backup.exists():
+            backup.unlink()  # the original is still in place, so this copy is not needed
+        return False
+
+
+def _restore_times(path, original):
+    """The library orders videos and dates them by the file's modification time,
+    so a rewrite keeps the original's access and modification times."""
+    try:
+        os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+    except OSError:
+        logging.warning('FreeVideo could not keep the original time of %s.', path, exc_info=True)
+
+
+def _media(path):
+    """Each stream's codec and shape, with the count and a digest of its packet bytes."""
+    import av
+    with av.open(str(path)) as container:
+        streams = list(container.streams)
+        layout = [(stream.type, stream.codec_context.name, getattr(stream.codec_context, 'width', None),
+                   getattr(stream.codec_context, 'height', None), getattr(stream.codec_context, 'sample_rate', None))
+                  for stream in streams]
+        digests = {stream.index: hashlib.sha256() for stream in streams}
+        counts = dict.fromkeys(digests, 0)
+        for packet in container.demux():
+            if packet.size:
+                digests[packet.stream.index].update(bytes(packet))
+                counts[packet.stream.index] += 1
+    return layout, [(counts[index], digests[index].hexdigest()) for index in sorted(digests)]
+
+
+def _timing(path):
+    import av
+    with av.open(str(path)) as reader:
+        streams = {s.index: [] for s in reader.streams}
+        for p in reader.demux():
+            if p.size:
+                streams[p.stream.index].append((p.pts * p.time_base if p.pts is not None else None,
+                    p.dts * p.time_base if p.dts is not None else None, p.duration * p.time_base))
+        return streams
+
+
+def _copy_stream(container, template):
+    try:
+        return container.add_stream_from_template(template=template, opaque=True)
+    except (AttributeError, TypeError):  # PyAV releases without add_stream_from_template(opaque=...)
+        return container.add_stream(template=template)
+
+
+# The two keys that carry the user's prompt, the graph and the names of the files it read.
+PRIVATE_KEYS = ('prompt', 'workflow')
+
+
+def carries_graph(path):
+    """Whether the MP4 at `path` carries the prompt or the workflow. A file PyAV cannot open is searched for
+    the QuickTime key names themselves, so an unreadable file is never taken for one without them."""
+    try:
+        import av
+        with av.open(str(path)) as reader:
+            return any(reader.metadata.get(key) for key in PRIVATE_KEYS)
+    except ImportError:
+        pass
+    except Exception:
+        logging.info('FreeVideo searched an unreadable video for its workflow keys.')
+    markers = [b'mdta' + key.encode() for key in PRIVATE_KEYS]
+    tail = b''
+    with open(path, 'rb') as stream:
+        for block in iter(lambda: stream.read(4 * 1024 * 1024), b''):
+            if any(marker in tail + block for marker in markers):
+                return True
+            tail = block[-16:]
+    return False
+
+
+def stripped_copy(path, target):
+    """Write the MP4 at `path` to `target` without its prompt and workflow, every packet copied unchanged.
+
+    For a video that leaves this machine: the library's own file keeps both, so dropping it on the canvas
+    still restores the graph. Raises when the copy does not match the original packet for packet and in
+    timing, and then nothing is left at `target`."""
+    import av
+    path, target = Path(path), Path(target)
+    if disk_space.free_bytes(path.parent) < path.stat().st_size + 256 * 1024 * 1024:
+        raise OSError(28, 'Not enough free disk space for the download copy')
+    try:
+        with av.open(str(path)) as source:
+            video = next(iter(source.streams.video), None)
+            timescale = video.time_base.denominator if video is not None and video.time_base is not None else None
+            options = {'movflags': 'faststart', **({'video_track_timescale': str(timescale)} if timescale else {})}
+            with av.open(str(target), 'w', format='mp4', options=options) as writer:
+                if not source.streams or any(stream.type not in ('video', 'audio') or stream.codec_context is None
+                                             for stream in source.streams):
+                    raise ValueError('Only videos with nothing but audio and video streams are copied')
+                streams = {stream: _copy_stream(writer, stream) for stream in source.streams}
+                for packet in source.demux(*streams):
+                    if packet.dts is not None:
+                        packet.stream = streams[packet.stream]
+                        writer.mux(packet)
+        if _media(target) != _media(path) or _timing(target) != _timing(path):
+            raise ValueError('The download copy does not match the original')
+        if carries_graph(target):
+            raise ValueError('The download copy still carries the workflow')
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+    return target
+
+
+def saved_workflow(path):
+    """The canvas workflow in a run's workflow.json, or None. Requests queued
+    without the canvas (the API, scripts) leave an empty one."""
+    try:
+        value = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if isinstance(value, dict) and 'nodes' not in value and isinstance(value.get('workflow'), dict):
+        value = value['workflow']
+    return value if isinstance(value, dict) and value.get('nodes') else None
+
+
+def has_workflow(path):
+    import av
+    with av.open(str(path)) as reader:
+        return bool(reader.metadata.get('workflow'))
+
+
+def backfill(output_directory, *, stop=None):
+    """Store the workflow in videos saved before it was embedded, from the
+    workflow.json kept beside each one. Each original is kept next to its video
+    as video.before-workflow.mp4. Runs once: a marker records a pass with nothing
+    left to do. Returns the counts, or None when there was nothing to run."""
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    marker = root / BACKFILL_MARKER
+    if marker.is_file() or not root.is_dir():
+        return None
+    from .result_cache import ResultCache, _file, save
+    cache = ResultCache(output_directory)
+    rows = {}
+    for row in cache.index.glob('*.json'):
+        try:
+            rows.setdefault(json.loads(row.read_text(encoding='utf-8'))['id'], []).append(row)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    counts = dict(embedded=0, skipped=0, pending=0, failed=0, no_space=0)
+    for video in sorted(root.glob('*/*/video.mp4')):
+        if stop is not None and stop.is_set():
+            return counts
+        run = video.parent
+        try:
+            state = json.loads((run / 'comfy-request.json').read_text(encoding='utf-8')).get('status')
+        except (OSError, ValueError, AttributeError):
+            state = None
+        if state in ('starting', 'running'):
+            counts['pending'] += 1  # Its own request embeds the workflow when it completes.
+            continue
+        try:
+            workflow = saved_workflow(run / 'workflow.json')
+            if workflow is None or has_workflow(video):
+                counts['skipped'] += 1
+                continue
+        except Exception:
+            counts['failed'] += 1
+            continue
+        if (run / BACKUP_NAME).exists():
+            counts['skipped'] += 1  # An earlier attempt left its backup; do not touch this video again.
+            continue
+        if not embed_comfy_metadata(video, workflow=workflow, backup=run / BACKUP_NAME):
+            counts['failed'] += 1
+            # Space is checked after the attempt too: a write that ran out has already removed its copy.
+            try:
+                counts['no_space'] += not _room(video, video.stat().st_size)
+            except OSError:
+                pass
+            continue
+        counts['embedded'] += 1
+        # Keep saved results reusable: the index records each output's size and hash.
+        for row in rows.get(run.relative_to(root).as_posix(), []):
+            try:
+                value = json.loads(row.read_text(encoding='utf-8'))
+                value['files']['.mp4'] = dict(bytes=video.stat().st_size, sha256=_file(video, content=True))
+                save(row, value)
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+    if not counts['pending'] and not counts['failed']:
+        save(marker, dict(schema=1, completed_at=time.time(), embedded=counts['embedded']))
+    return counts
+
+
+TIMES_MARKER = '.workflow-times-restored.json'
+
+
+def restore_backfilled_times(output_directory, *, stop=None):
+    """Videos that were rewritten before the original time was kept took the
+    time of the rewrite. Their backup is the original file (a hard link or a
+    copy that keeps the time), so its time goes back onto the video. Only a
+    video that is newer than its own backup and still carries a workflow is
+    touched. Runs once; returns the number restored, or None when it already ran."""
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    marker = root / TIMES_MARKER
+    if marker.is_file() or not root.is_dir():
+        return None
+    from .monitoring import save
+    restored = 0
+    complete = True
+    for backup in sorted(root.glob('*/*/' + BACKUP_NAME)):
+        if stop is not None and stop.is_set():
+            return restored
+        video = backup.with_name('video.mp4')
+        try:
+            if backup.is_symlink() or video.is_symlink() or not backup.is_file() or not video.is_file():
+                continue
+            before, now = backup.stat(), video.stat()
+            if now.st_mtime_ns <= before.st_mtime_ns or not has_workflow(video):
+                continue
+            os.utime(video, ns=(before.st_atime_ns, before.st_mtime_ns))
+            restored += 1
+        except Exception:
+            complete = False
+            logging.warning('FreeVideo could not restore the time of %s.', video, exc_info=True)
+    if complete:
+        save(marker, dict(schema=1, completed_at=time.time(), restored=restored))
+    return restored
+
+
+DISMISSED = '.workflow-backfill-dismissed.json'
+_job = {'state': 'idle', 'result': None}
+_job_lock = threading.Lock()
+
+
+def candidates(output_directory):
+    """Earlier videos the backfill would rewrite, and their total size (the backups take as much)."""
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    found = dict(count=0, bytes=0)
+    if not root.is_dir() or (root / BACKFILL_MARKER).is_file():
+        return found
+    for video in root.glob('*/*/video.mp4'):
+        run = video.parent
+        try:
+            state = json.loads((run / 'comfy-request.json').read_text(encoding='utf-8')).get('status')
+        except (OSError, ValueError, AttributeError):
+            state = None
+        try:
+            if (state in ('starting', 'running') or (run / BACKUP_NAME).exists()
+                    or saved_workflow(run / 'workflow.json') is None or has_workflow(video)):
+                continue
+            found['count'] += 1
+            found['bytes'] += video.stat().st_size
+        except Exception:
+            continue
+    return found
+
+
+def register():
+    """Earlier videos get their workflow only when the user confirms it in Creations."""
+    import asyncio
+    from aiohttp import web
+    import folder_paths
+    from server import PromptServer
+    from .monitoring import save
+    server = PromptServer.instance
+    if server is None or getattr(server, '_freevideo_workflow_backfill', False):
+        return
+    server._freevideo_workflow_backfill = True
+    try:
+        from comfy.cli_args import args
+        disabled = bool(args.disable_metadata)
+    except (ImportError, AttributeError):
+        disabled = False
+
+    def run(output):
+        try:
+            result = backfill(output) or dict(embedded=0, skipped=0, pending=0, failed=0, no_space=0)
+            if result['embedded']:
+                logging.info('FreeVideo stored the workflow in %d earlier videos.', result['embedded'])
+        except Exception as error:
+            logging.warning('FreeVideo could not store the workflow in earlier videos.', exc_info=True)
+            result = dict(embedded=0, skipped=0, pending=0, failed=1, no_space=int(disk_space.ran_out(error)))
+        with _job_lock:
+            _job.update(state='done', result=result)
+
+    def restore_times():
+        try:
+            count = restore_backfilled_times(folder_paths.get_output_directory())
+            if count:
+                logging.info('FreeVideo restored the original time of %d earlier videos.', count)
+        except Exception:
+            logging.warning('FreeVideo could not restore the time of earlier videos.', exc_info=True)
+
+    threading.Thread(target=restore_times, name='freevideo-workflow-times', daemon=True).start()
+
+    @server.routes.get('/freevideo/workflow-backfill')
+    async def status(request):
+        output = folder_paths.get_output_directory()
+        dismissed = (Path(output).resolve() / 'FreeVideo' / DISMISSED).is_file()
+        found = dict(count=0, bytes=0)
+        if not disabled and not dismissed and _job['state'] != 'running':
+            found = await asyncio.to_thread(candidates, output)
+        with _job_lock:
+            job = dict(_job)
+        return web.json_response(dict(found, disabled=disabled, dismissed=dismissed, **job), headers={'Cache-Control': 'no-store'})
+
+    @server.routes.post('/freevideo/workflow-backfill')
+    async def act(request):
+        try:
+            action = (await request.json()).get('action')
+        except (ValueError, AttributeError):
+            action = None
+        output = folder_paths.get_output_directory()
+        if action == 'dismiss':
+            save(Path(output).resolve() / 'FreeVideo' / DISMISSED, dict(schema=1, dismissed_at=time.time()))
+            return web.json_response(dict(dismissed=True))
+        if action != 'run' or disabled:
+            raise web.HTTPBadRequest(text='Unknown action')
+        with _job_lock:
+            if _job['state'] != 'running':
+                _job.update(state='running', result=None)
+                threading.Thread(target=run, args=(output,), name='freevideo-workflow-backfill', daemon=True).start()
+            return web.json_response(dict(state=_job['state']))

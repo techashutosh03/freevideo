@@ -1,0 +1,116 @@
+import {showHowTo} from './first_run_guide.js';
+
+// Short walk-throughs played over the live interface (the shared anchored layer, as the first-run guide uses).
+// A step names its control; when that control is not on screen (nothing generated yet, say) `image` stands in for it.
+const shown = node => Boolean(node?.isConnected && node.getClientRects().length);
+
+// The whole Media section, from its title to the last line. It is a closed tray behind the Media chip: the chip is shown
+// first, and the tray opens when the step is reached (then the ring follows the open section).
+let tourOpened = null;
+let tourWatch = null;
+const putMediaAway = () => { if (tourOpened) tourOpened.open = false; tourOpened = null; tourWatch?.disconnect(); tourWatch = null; };
+// A tray the walk-through opened is put away when it moves on and when it ends, however it ends; one the person had open stays.
+const openMedia = details => () => {
+    if (details.open) return;
+    details.open = true; tourOpened = details;
+    tourWatch ||= new MutationObserver(() => { if (!document.querySelector('.fv-guide-layer')) putMediaAway(); });
+    tourWatch.observe(document.body, {childList: true, subtree: true});
+};
+const mediaSection = dialog => {
+    const box = node => { const r = node.getBoundingClientRect(); return {left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height}; };
+    const details = dialog.querySelector('[data-fv-guide="media"]')?.closest('details');
+    if (!details) return null;
+    if (shown(details)) return {node: details, rect: box(details), reveal: openMedia(details)};
+    const chip = dialog.querySelector('.fvs-chip[data-chip="media"]');
+    return shown(chip) ? {node: chip, rect: box(chip), reveal: openMedia(details)} : null;
+};
+// Only the part on the timeline: the selected clip or range, else the first part.
+const selectedPart = dialog => {
+    const find = selector => [...dialog.querySelectorAll(selector)].filter(shown)[0];
+    const node = find('.fv-ed-clip[aria-selected="true"]') || find('[data-fv-guide="editor-timeline"] .fv-ed-selection') || find('.fv-ed-clip');
+    if (!node) return null;
+    const r = node.getBoundingClientRect();
+    return {node, rect: {left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height}};
+};
+const HOWTOS = [
+    {id: 'reference-video', view: 'studio', title: ['Make a video from reference images', '参考图生成视频'],
+        steps: [
+            {id: 'media', target: mediaSection, en: 'Add images here and set each one as a reference, first frame, or last frame.',
+                zh: '在此添加图片，每张可设为参\u2060考、首\u2060帧或尾\u2060帧。'},
+            {id: 'describe', prepare: putMediaAway, anchor: '[data-fv-guide="describe"]', en: 'Type @ in the prompt and choose an image, then say what it does in the scene.',
+                zh: '在描述中输入 @ 选择图片，并写明它在画面中的作用。'},
+            {id: 'media-av', target: mediaSection, en: 'Videos and audio can be references too: add them the same way with "Add" and mention them in the prompt with @.',
+                zh: '视频和音频也可作为参考：同样点“添\u2060加”，在描述中输入 @ 引用。'},
+            {id: 'generate', prepare: putMediaAway, anchor: '[data-fv-guide="generate"]', en: 'Choose "Generate video".', zh: '点“生成视频”。'}]},
+    {id: 'long-video', view: 'studio', needsParts: true, title: ['Make a longer video', '连续的长视频'],
+        steps: [
+            {id: 'seconds', anchor: '[data-fv-guide="seconds"]', en: 'Enter a longer duration. It is made in parts automatically.',
+                zh: '填写更长的时长，会自动分段生成。'},
+            {id: 'generate', anchor: '[data-fv-guide="generate"]', en: 'Choose "Generate video".', zh: '点“生成视频”。'},
+            {id: 'extend', anchor: '.fv-action-extend', image: 'extend-button',
+                en: 'Choose "Extend" below a finished video to continue it. Each continued part is at least 5 seconds, and the last one can be as short as 2 seconds. With a part shorter than 10 seconds, one video has at most 4 parts.',
+                zh: '在生成好的视频下方点“接着生成”，继续下一段。接着生成的每一段至少 5 秒，最后一段可短至 2 秒。有短于 10 秒的段时，一条视频最多 4 段。'},
+            {id: 'longer', anchor: '[data-view="editor"]', en: 'Parts can also be added one by one in "Edit".', zh: '也可在“剪辑视图”中逐段接续。'}]},
+    {id: 'editor-extend-refs', view: 'editor', title: ['Add reference images when extending in Edit', '在剪辑视图延长时加参考图'],
+        steps: [
+            {id: 'editor-timeline', target: selectedPart, en: 'Select the part to continue.', zh: '选中要接续的一段。'},
+            {id: 'editor-refs', anchor: '[data-fv-guide="editor-refs"]', image: 'editor-refs', prefer: ['below', 'left', 'right', 'above'],
+                en: 'Choose "Media" to upload or generate images.', zh: '点“素材”，上传或生成图片。'},
+            {id: 'editor-describe', anchor: '[data-fv-guide="editor-describe"]', en: 'Describe it, then choose "Generate".', zh: '填写描述，然后点“生成”。'}]},
+    {id: 'separate-tracks', view: 'editor', title: ['Separate tracks', '分离音轨'],
+        steps: [
+            {id: 'sound-clip', anchor: '[data-tour-id="audio-a1-track"]', en: 'Select a clip with sound.', zh: '请选中带声音的片段。'},
+            {id: 'separate', anchor: '[data-tour-id="audio-track-button"]', en: 'Choose "Separate tracks". Dialogue, music and ambience become three tracks.', zh: '点“分离音轨”，人声、音乐和环境声会分成三条轨道。'},
+            {id: 'parts', anchor: '[data-tour-id="audio-music-stem"]', en: 'Each part can now be replaced on its own.', zh: '每条轨道现在都可以单独替换。'}]},
+    {id: 'replace-music', view: 'editor', title: ['Replace the music', '换一段配乐'],
+        steps: [
+            {id: 'music-track', anchor: '[data-tour-id="audio-music-stem"]', en: 'Select a clip on the music track.', zh: '选中“音乐”轨上的片段。'},
+            {id: 'music-describe', anchor: '[data-fv-guide="editor-describe"]', en: 'Describe the music you want.', zh: '描述想要的配乐。'},
+            {id: 'music-generate', anchor: '[data-fv-guide="editor-generate"]', en: 'Choose "Replace music".', zh: '点“替换配乐”。'}]},
+    {id: 'replace-voice', view: 'editor', title: ['Edit lines one by one', '逐句改台词'],
+        steps: [
+            {id: 'voice-lines', anchor: '[data-tour-id="voice-lines"]', en: 'Select a clip on the dialogue track. Change the words of a line here.', zh: '选中“人声”轨上的片段，在这里修改某一句的文字。'},
+            {id: 'voice-generate', anchor: '[data-fv-guide="editor-generate"]', en: 'Choose "Redub" to speak the changed lines again.', zh: '点“重新配音”，只重配改过的句子。'}]}
+];
+
+export const howToList = cn => HOWTOS.map(({id, title}) => ({id, title: title[cn ? 1 : 0]}));
+
+// Devices that cannot make longer videos in parts have no Extend button, so that how-to is not offered.
+// An unreadable answer keeps it, as the length field's own line does.
+async function canMakeParts() {
+    try {
+        const {api} = await import('../../scripts/api.js');
+        const reply = await api.fetchApi('/freevideo/chains');
+        return !(reply?.ok && (await reply.json())?.continuation === false);
+    } catch { return true; }
+}
+export async function howToAvailable(id) {
+    const howTo = HOWTOS.find(item => item.id === id);
+    return Boolean(howTo) && (!howTo.needsParts || await canMakeParts());
+}
+export async function availableHowToList(cn) {
+    const parts = await canMakeParts();
+    return HOWTOS.filter(item => parts || !item.needsParts).map(({id, title}) => ({id, title: title[cn ? 1 : 0]}));
+}
+
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// Plays one how-to. The editor ones open the Edit view first; the others open the creation panel.
+let opening = 0;
+export async function startHowTo(id, {openWorkspace = async () => (await import('./view_navigation.js')).openCreativeWorkspace()} = {}) {
+    const howTo = HOWTOS.find(item => item.id === id);
+    if (!howTo || !await howToAvailable(id)) return false;
+    // Tour cards stay closed while a how-to opens its view, as they do over the guide layer.
+    opening++;
+    document.body.dataset.fvHowTo = 'opening';
+    try {
+        if (!await openWorkspace()) return false;
+        if (howTo.view === 'editor') {
+            document.querySelector('dialog.fv-studio [data-view="editor"]')?.click();
+            for (let i = 0; i < 40 && !document.querySelector('dialog.fv-editor[open]'); i++) await wait(100);
+        }
+        await document.fonts.ready;
+        await wait(250);
+        return await showHowTo(howTo.steps, {title: howTo.title});
+    } finally { if (!--opening) delete document.body.dataset.fvHowTo; }
+}

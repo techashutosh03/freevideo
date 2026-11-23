@@ -1,0 +1,108 @@
+include setup.sh test.sh freevideo LICENSE .gitignore .gitattributes .editorconfig
+include setup.ps1 test.ps1 freevideo.ps1 setup.cmd test.cmd freevideo.cmd
+include __init__.py README.zh-CN.md
+include NOTICE THIRD_PARTY_NOTICES.md CONTRIBUTING.md SECURITY.md CITATION.cff
+recursive-include example_workflows *.json
+recursive-include web *.js *.css
+include web/vendor/three/LICENSE
+include web/assets/*.svg web/assets/*.png web/assets/*.webp
+recursive-include web/assets/image *.webp
+recursive-include web/assets/whatsnew *.webp
+recursive-include web/howto *.png
+recursive-include web/fonts *.woff2
+recursive-include web/tutorial *.webp *.mp4
+recursive-include freevideo_engine/assets *.png *.ico
+recursive-include freevideo_engine/launcher *.qml
+recursive-include freevideo_engine/agent/skill *.txt
+recursive-include freevideo_engine/launcher/licenses *.txt
+recursive-include freevideo_engine/licenses *.txt
+recursive-include constraints *.txt
+include scripts/bootstrap_linux.sh scripts/build_windows.py scripts/windows_app.py scripts/check_installation.py
+include scripts/build_macos.py scripts/macos_app.py scripts/verify_macos_build.py
+include scripts/scan_windows_release.py
+include scripts/build_launcher_notices.py
+include scripts/prune_qt_bundle.py scripts/deduplicate_bundle_data.py scripts/pyi_rth_bundle_data.py
+include scripts/verify_dmg_conversion.py
+prune docs
+include docs/LoRA.md docs/LoRA.zh-CN.md
+prune tests
+prune benchmarks
+prune distribution
+prune .github
+exclude AGENTS.md CHANGELOG.md
+
+include freevideo_source_bootstrap.py freevideo_ed25519.py freevideo_update_keys.py
+
+# Bundled feature examples; every file is registered explicitly.
+include web/assets/tour/anime-first.webp
+include web/assets/tour/anime-last.webp
+include web/assets/tour/c1-s2.mp4
+include web/assets/tour/c1-s2.webp
+include web/assets/tour/c2-product.webp
+include web/assets/tour/sample-fjord.webp
+include web/assets/tour/sample-jazz.webp
+include web/assets/tour/sample-perfume.webp
+include web/assets/tour/sample-fox.webp
+include web/assets/tour/sample-window.webp
+include web/assets/tour/c2-whitemodel.webp
+include web/assets/tour/c2g-s3.mp4
+include web/assets/tour/c2g-s3.webp
+include web/assets/tour/c3-s1.mp4
+include web/assets/tour/c3-s1.webp
+include web/assets/tour/c4-high.mp4
+include web/assets/tour/c4-high.webp
+include web/assets/tour/c4-light.mp4
+include web/assets/tour/c4-light.webp
+include web/assets/tour/c4-max.mp4
+include web/assets/tour/c4-max.webp
+include web/assets/tour/c4-medium.mp4
+include web/assets/tour/c4-medium.webp
+include web/assets/tour/c5-forest-s1.mp4
+include web/assets/tour/c5-forest-s1.webp
+include web/assets/tour/c5-snow-s1.mp4
+include web/assets/tour/c5-snow-s1.webp
+include web/assets/tour/c6-s1.mp4
+include web/assets/tour/c6-s1.webp
+include web/assets/tour/c7-s1.mp4
+include web/assets/tour/c7-s1.webp
+include web/assets/tour/c7-src-s1.mp4
+include web/assets/tour/c7-src-s1.webp
+include web/assets/tour/c8-original.webp
+include web/assets/tour/c8-s1.mp4
+include web/assets/tour/c8-s1.webp
+include web/assets/tour/c9-s1.mp4
+include web/assets/tour/c9-s1.webp
+include web/assets/tour/c10-person.webp
+include web/assets/tour/c10-s1.mp4
+include web/assets/tour/c10-s1.webp
+include web/assets/tour/c11-s1.mp4
+include web/assets/tour/c11-s1.webp
+include web/assets/tour/c12-s1.mp4
+include web/assets/tour/c12-s1.webp
+include web/assets/tour/c13-s1.mp4
+include web/assets/tour/c13-s1.webp
+include web/assets/tour/cb-ambience.mp4
+include web/assets/tour/cb-ambience.webp
+include web/assets/tour/cb-dialogue.mp4
+include web/assets/tour/cb-dialogue.webp
+include web/assets/tour/cb-music.mp4
+include web/assets/tour/cb-music.webp
+include web/assets/tour/cb-source.mp4
+include web/assets/tour/cb-source.webp
+include web/assets/tour/ca-music.mp4
+include web/assets/tour/ca-music.webp
+include web/assets/tour/ca-music-wave.webp
+include web/assets/tour/ca-dub.mp4
+include web/assets/tour/ca-dub.webp
+include web/assets/tour/ca-dub-wave.webp
+include web/assets/tour/ca-record.mp4
+include web/assets/tour/ca-record.webp
+include web/assets/tour/ca-record-wave.webp
+include web/assets/tour/cc-speech.mp4
+include web/assets/tour/cc-speech.webp
+include web/assets/tour/cc-speech-wave.webp
+include web/assets/tour/cd-narration.mp4
+include web/assets/tour/cd-narration.webp
+include web/assets/tour/cd-narration-wave.webp
+include web/assets/tour/c10-source.webp
+include web/assets/tour/fox-sheet.webp

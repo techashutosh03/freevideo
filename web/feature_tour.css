@@ -1,0 +1,132 @@
+/* ═══ The anchored layer (feature_tour_layer.js): feature cards, "Take me there", first-run steps, how-to steps, hints ═══
+   A manual popover inside the view it explains: fixed to the window, so the light dim covers it edge to edge (top bar
+   included, nothing but FreeVideo behind it); no pointer input except on the card, so a press anywhere reaches what
+   was pressed. data-level: 0 hint (no dim, no ring) · 1 point (ring) · 2 spotlight (light dim, the target cut out). */
+:root{--fv-tour-scrim:rgb(3 4 6 / .36);--fv-tour-w:328px;--fv-tour-wide:464px;--fv-tour-text:288px}
+:root[data-theme=light]{--fv-tour-scrim:rgb(20 24 32 / .2)}
+:is(:root[data-glass=solid],:root.lite){--fv-tour-scrim:rgb(3 4 6 / .5)}
+:is(:root[data-glass=solid],:root.lite)[data-theme=light]{--fv-tour-scrim:rgb(20 24 32 / .3)}
+@media(prefers-reduced-transparency:reduce){:root{--fv-tour-scrim:rgb(3 4 6 / .6)}:root[data-theme=light]{--fv-tour-scrim:rgb(20 24 32 / .36)}}
+.fv-tour-layer,.fv-tour-layer:popover-open{position:fixed;inset:0;width:auto;height:auto;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;
+  overflow:visible;color:var(--fv-fg);pointer-events:none;z-index:var(--fv-z-pop,2400);font:var(--fv-fs-2,13px)/var(--fv-lh-2,20px) var(--fv-font,system-ui,sans-serif);
+  text-align:left;-webkit-user-select:none;user-select:none;transition:opacity var(--fv-dur-2,200ms) var(--fv-ease-out,cubic-bezier(.2,.8,.2,1))}
+.fv-tour-layer:not(:popover-open)[popover]{display:none}
+.fv-tour-layer *,.fv-tour-layer *::before,.fv-tour-layer *::after{box-sizing:border-box}
+.fv-tour-layer[data-state=enter]{opacity:0}
+.fv-tour-layer[data-state=leave]{opacity:0;transition:opacity var(--fv-dur-1,160ms) var(--fv-ease-exit,cubic-bezier(.4,0,1,1))}
+/* The ring and the cut-out: one box on the target; at level 2 its shadow is the dim over everything else. */
+.fv-tour-layer .fv-tour-spot{position:absolute;border-radius:var(--fv-spot-r,12px);pointer-events:none;
+  box-shadow:0 0 0 2px var(--fv-accent-ink),0 0 0 6px var(--fv-accent-soft);
+  transition:left var(--fv-dur-3,260ms) var(--fv-ease-move,cubic-bezier(.2,.8,.2,1)),top var(--fv-dur-3,260ms) var(--fv-ease-move,cubic-bezier(.2,.8,.2,1)),
+    width var(--fv-dur-3,260ms) var(--fv-ease-move,cubic-bezier(.2,.8,.2,1)),height var(--fv-dur-3,260ms) var(--fv-ease-move,cubic-bezier(.2,.8,.2,1))}
+/* The dim: one window-sized layer, the target cut out with a clip path (feature_tour_layer.js holePath). */
+.fv-tour-layer .fv-tour-dim{position:absolute;inset:0;background:var(--fv-tour-scrim);pointer-events:none;display:none}
+.fv-tour-layer[data-level="2"] .fv-tour-dim{display:block}
+.fv-tour-layer[data-level="2"] .fv-tour-spot{box-shadow:0 0 0 2px var(--fv-accent-ink)}
+.fv-tour-layer[data-level="2"][data-nospot] .fv-tour-spot{display:none}
+.fv-tour-layer[data-level="0"] .fv-tour-spot,.fv-tour-layer[data-level="1"][data-nospot] .fv-tour-spot{display:none}
+.fv-tour-layer[data-state=enter] .fv-tour-spot{transition:none}
+/* The drag gesture, shown on the real range: a soft bar sweeps across it twice. */
+.fv-tour-layer .fv-tour-ghost{position:absolute;inset:8px 4px;border-radius:var(--fv-rad-sm,8px);border:1.5px dashed var(--fv-accent-line);background:var(--fv-accent-soft);
+  transform-origin:left center;animation:fv-tour-sweep 1.4s var(--fv-ease-out,cubic-bezier(.2,.8,.2,1)) .3s 2 both}
+.fv-tour-layer .fv-tour-ghost::after{content:"";position:absolute;right:-1px;top:50%;width:8px;height:8px;margin-top:-4px;border-radius:var(--fv-r-pill);background:var(--fv-accent-ink);box-shadow:0 0 0 4px var(--fv-accent-soft)}
+@keyframes fv-tour-sweep{0%{transform:scaleX(.02);opacity:0}15%{opacity:1}70%{transform:scaleX(1);opacity:1}100%{transform:scaleX(1);opacity:1}}
+
+/* The card (glass level 3 from tokens.css). stand: media on top · wide: media left · text: words only · hint: one line. */
+.fv-tour-layer .fv-tour-pop{position:absolute;pointer-events:auto;width:var(--fv-tour-w);max-width:calc(100vw - 2 * var(--fv-edge-gap,16px));margin:0;
+  padding:var(--fv-sp-12,12px);border-radius:var(--fv-rad-dock,20px);color:var(--fv-fg);
+  transition:opacity var(--fv-dur-2,200ms) var(--fv-ease-out,cubic-bezier(.2,.8,.2,1)),translate var(--fv-dur-2,200ms) var(--fv-ease-out,cubic-bezier(.2,.8,.2,1))}
+.fv-tour-layer[data-state=enter] .fv-tour-pop{translate:var(--dx,0) var(--dy,0)}
+.fv-tour-pop[data-side=above]{--dy:var(--fv-shift,4px)}.fv-tour-pop[data-side=below]{--dy:calc(-1 * var(--fv-shift,4px))}
+.fv-tour-pop[data-side=left]{--dx:var(--fv-shift,4px)}.fv-tour-pop[data-side=right]{--dx:calc(-1 * var(--fv-shift,4px))}
+.fv-tour-layer .fv-tour-pop[data-shape=wide]{width:var(--fv-tour-wide);display:grid;grid-template-columns:192px minmax(0,1fr);column-gap:var(--fv-sp-16,16px);align-items:start}
+.fv-tour-layer .fv-tour-pop[data-shape=text]{width:var(--fv-tour-text)}
+.fv-tour-layer .fv-tour-pop[data-shape=hint]{width:max-content;max-width:min(288px,calc(100vw - 24px));padding:var(--fv-sp-12,12px) var(--fv-sp-16,16px)}
+.fv-tour-pop .fv-tour-body{padding:var(--fv-sp-12,12px) var(--fv-sp-4,4px) var(--fv-sp-4,4px);min-width:0}
+.fv-tour-pop[data-shape=wide] .fv-tour-body{padding:var(--fv-sp-4,4px) var(--fv-sp-4,4px) 0 0}
+.fv-tour-pop:is([data-shape=text],:not([data-hx-mb])) .fv-tour-body{padding:var(--fv-sp-4,4px)}
+.fv-tour-pop[data-shape=hint] .fv-tour-body{padding:0;display:flex;align-items:center;gap:var(--fv-sp-8,8px)}
+.fv-tour-pop .fv-tour-head{display:flex;align-items:flex-start;gap:var(--fv-sp-8,8px);min-height:var(--fv-lh-3,24px)}
+.fv-tour-pop .fv-tour-head h3{flex:1;min-width:0;margin:0;font-size:var(--fv-fs-3,16px);line-height:var(--fv-lh-3,24px);font-weight:var(--fv-fw-3,600);color:var(--fv-fg);text-wrap:balance}
+.fv-tour-pop .fv-tour-eyebrow{display:flex;align-items:center;gap:var(--fv-sp-8,8px);margin:0 0 var(--fv-sp-4,4px);font-size:var(--fv-fs-1,12px);line-height:var(--fv-lh-1,16px);color:var(--fv-fg3);font-variant-numeric:tabular-nums}
+.fv-tour-pop .fv-tour-badge{display:inline-flex;align-items:center;height:20px;padding:0 var(--fv-sp-8,8px);border-radius:var(--fv-rad-pill,999px);background:var(--fv-accent-soft);color:var(--fv-accent-ink);font-weight:var(--fv-fw-3,600)}
+.fv-tour-pop .fv-tour-text{margin:var(--fv-sp-4,4px) 0 0;color:var(--fv-fg2);font-size:var(--fv-fs-2,13px);line-height:var(--fv-lh-2,20px);text-wrap:pretty}
+.fv-tour-pop[data-shape=hint] .fv-tour-text{flex:1;margin:0;color:var(--fv-fg)}
+.fv-tour-pop .fv-tour-note{text-align:left;display:flex;gap:var(--fv-sp-8,8px);margin:var(--fv-sp-12,12px) 0 0;padding:var(--fv-sp-8,8px) var(--fv-sp-12,12px);border-radius:var(--fv-rad-ctl,12px);
+  background:var(--fv-caution-soft);color:var(--fv-fg);font-size:var(--fv-fs-2,13px);line-height:var(--fv-lh-2,20px)}
+.fv-tour-pop .fv-tour-note[hidden]{display:none}
+.fv-tour-pop .fv-tour-foot{display:flex;align-items:center;gap:var(--fv-sp-8,8px);margin-top:var(--fv-sp-16,16px)}
+.fv-tour-pop .fv-tour-foot .fv-tour-grow{flex:1}
+.fv-tour-pop .fv-tour-pips{display:flex;align-items:center;gap:var(--fv-sp-4,4px);padding:0 var(--fv-sp-4,4px)}
+.fv-tour-pop .fv-tour-pips i{width:6px;height:6px;border-radius:var(--fv-r-xs);background:var(--fv-line2);transition:width var(--fv-dur-2,200ms) var(--fv-ease-out,cubic-bezier(.2,.8,.2,1)),background-color var(--fv-dur-2,200ms) var(--fv-ease-out,cubic-bezier(.2,.8,.2,1))}
+.fv-tour-pop .fv-tour-pips i.is-on{width:16px;background:var(--fv-accent-ink)}
+/* Buttons: one filled main action at most; the lit control itself is often the real next step. */
+.fv-tour-layer .fv-tour-btn{display:inline-flex;align-items:center;justify-content:center;gap:var(--fv-sp-8,8px);flex:none;height:var(--fv-ctl,32px);min-height:0;min-width:0;margin:0;
+  padding:0 var(--fv-sp-12,12px);border:0;border-radius:var(--fv-rad-ctl,12px);background:transparent;color:var(--fv-fg);font:inherit;font-weight:var(--fv-fw-2,500);
+  line-height:1;white-space:nowrap;cursor:pointer;text-decoration:none;box-shadow:none;filter:none;-webkit-tap-highlight-color:transparent;
+  transition:background-color var(--fv-dur-1,160ms) var(--fv-ease-out,cubic-bezier(.2,.8,.2,1)),color var(--fv-dur-1,160ms) var(--fv-ease-out,cubic-bezier(.2,.8,.2,1)),scale var(--fv-dur-press,90ms) var(--fv-ease-out,cubic-bezier(.2,.8,.2,1))}
+.fv-tour-layer .fv-tour-btn:hover:not(:disabled){background:var(--fv-ctl-hover);color:var(--fv-fg)}
+.fv-tour-layer .fv-tour-btn:active:not(:disabled){background:var(--fv-ctl-press);scale:.98;filter:none}
+.fv-tour-layer .fv-tour-btn[data-kind=fill]{background:var(--fv-ctl-bg)}
+.fv-tour-layer .fv-tour-btn[data-kind=fill]:hover:not(:disabled){background:var(--fv-ctl-hover)}
+.fv-tour-layer .fv-tour-btn[data-kind=primary]{background:var(--fv-accent-fill);color:var(--fv-on-fill,#fff);font-weight:var(--fv-fw-3,600)}
+.fv-tour-layer .fv-tour-btn[data-kind=primary]:hover:not(:disabled){background:var(--fv-accent-fill);color:var(--fv-on-fill,#fff);filter:brightness(1.08)}
+.fv-tour-layer .fv-tour-btn[data-kind=link]{padding:0 var(--fv-sp-4,4px);color:var(--fv-accent-ink)}
+.fv-tour-layer .fv-tour-btn[data-kind=link]:hover:not(:disabled){background:transparent;color:var(--fv-accent-ink);text-decoration:underline;text-underline-offset:3px}
+.fv-tour-layer .fv-tour-btn:disabled{opacity:.45;cursor:default}
+.fv-tour-layer .fv-tour-btn:focus-visible,.fv-tour-layer .fv-tour-x:focus-visible,.fv-tour-layer .fv-tour-play:focus-visible,.fv-tour-layer .fv-tour-seg button:focus-visible{outline:2px solid var(--fv-focus,var(--fv-accent-ink));outline-offset:2px}
+.fv-tour-layer .fv-tour-x{position:relative;flex:none;display:grid;place-items:center;width:var(--fv-ctl-s,28px);height:var(--fv-ctl-s,28px);min-height:0;margin:-4px -4px 0 0;padding:0;border:0;
+  border-radius:var(--fv-rad-sm,8px);background:transparent;color:var(--fv-fg3);cursor:pointer;box-shadow:none;transition:background-color var(--fv-dur-1,160ms),color var(--fv-dur-1,160ms)}
+.fv-tour-layer .fv-tour-x::after{content:"";position:absolute;inset:-2px}
+.fv-tour-layer .fv-tour-x:hover{background:var(--fv-ctl-hover);color:var(--fv-fg)}
+.fv-tour-layer .fv-tour-x:active{background:var(--fv-ctl-press)}
+.fv-tour-layer svg.fv-tour-i{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.fv-tour-layer svg.fv-tour-i.is-solid{fill:currentColor;stroke:none}
+/* The notch of the card's own colour pointing at the target's middle; no blur of its own. */
+.fv-tour-layer .fv-tour-notch{position:absolute;width:16px;height:16px;rotate:45deg;background:rgb(var(--fv-tint) / var(--fv-a3));border:1px solid var(--fv-edge);pointer-events:none}
+.fv-tour-pop[data-side=above] .fv-tour-notch{bottom:-8px;border-top:0;border-left:0;border-bottom-right-radius:var(--fv-r-xs)}
+.fv-tour-pop[data-side=below] .fv-tour-notch{top:-8px;border-bottom:0;border-right:0;border-top-left-radius:var(--fv-r-xs)}
+.fv-tour-pop[data-side=right] .fv-tour-notch{left:-8px;border-top:0;border-right:0;border-bottom-left-radius:var(--fv-r-xs)}
+.fv-tour-pop[data-side=left] .fv-tour-notch{right:-8px;border-bottom:0;border-left:0;border-top-right-radius:var(--fv-r-xs)}
+.fv-tour-pop[data-side=center] .fv-tour-notch{display:none}
+:is(:root[data-glass=solid],:root.lite) .fv-tour-layer .fv-tour-notch{background:rgb(var(--fv-solid3))}
+@media(prefers-reduced-transparency:reduce){.fv-tour-layer .fv-tour-notch{background:rgb(var(--fv-solid3))}}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){.fv-tour-layer .fv-tour-notch{background:rgb(var(--fv-solid3))}}
+/* Media in a card: the example first, sound drawn as its waveform, sound plays from one button. */
+.fv-tour-pop .fv-tour-media{position:relative;margin:0;aspect-ratio:16/9;border-radius:var(--fv-rad-sm,8px);overflow:hidden;background:rgb(var(--fv-tint));box-shadow:inset 0 0 0 1px var(--fv-line)}
+.fv-tour-pop .fv-tour-media>:is(img,video){position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:cover;border:0;border-radius:0;background:none;cursor:default}
+.fv-tour-pop .fv-tour-media>video[hidden]{display:none}
+.fv-tour-pop .fv-tour-wave{position:absolute;left:var(--fv-sp-8,8px);right:var(--fv-sp-8,8px);bottom:var(--fv-sp-8,8px);height:28px;padding:var(--fv-sp-4,4px) var(--fv-sp-8,8px);
+  border-radius:var(--fv-rad-xs,6px);background:var(--fv-on-pic,rgb(0 0 0 / .5));display:flex;align-items:center;pointer-events:none}
+.fv-tour-pop .fv-tour-wave img{width:100%;height:100%;object-fit:fill;display:block;opacity:.95}
+.fv-tour-layer .fv-tour-play{position:absolute;left:var(--fv-sp-8,8px);top:var(--fv-sp-8,8px);display:inline-flex;align-items:center;gap:var(--fv-sp-4,4px);height:var(--fv-ctl-s,28px);min-height:0;
+  margin:0;padding:0 var(--fv-sp-12,12px) 0 var(--fv-sp-8,8px);border:0;border-radius:var(--fv-rad-pill,999px);background:var(--fv-on-pic,rgb(0 0 0 / .5));color:#fff;
+  font:inherit;font-size:var(--fv-fs-1,12px);font-weight:var(--fv-fw-3,600);cursor:pointer;box-shadow:none;transition:background-color var(--fv-dur-1,160ms),scale var(--fv-dur-press,90ms)}
+.fv-tour-layer .fv-tour-play:hover{background:rgb(0 0 0 / .7);color:#fff}.fv-tour-layer .fv-tour-play:active{scale:.98}
+.fv-tour-layer .fv-tour-play svg{width:14px;height:14px;fill:currentColor;stroke:none}
+.fv-tour-pop .fv-tour-seg{display:flex;gap:var(--fv-sp-4,4px);margin-top:var(--fv-sp-8,8px);padding:var(--fv-sp-4,4px);border-radius:var(--fv-rad-ctl,12px);background:var(--fv-ctl-bg)}
+.fv-tour-layer .fv-tour-seg button{flex:1;min-width:0;height:var(--fv-ctl-s,28px);min-height:0;margin:0;padding:0 var(--fv-sp-4,4px);border:0;border-radius:var(--fv-rad-sm,8px);background:transparent;
+  color:var(--fv-fg2);font:inherit;font-size:var(--fv-fs-1,12px);font-weight:var(--fv-fw-2,500);white-space:nowrap;cursor:pointer;box-shadow:none;transition:background-color var(--fv-dur-1,160ms),color var(--fv-dur-1,160ms)}
+.fv-tour-layer .fv-tour-seg button:hover{background:transparent;color:var(--fv-fg)}
+.fv-tour-layer .fv-tour-seg button[aria-pressed=true]{background:rgb(var(--fv-solid3));color:var(--fv-fg);box-shadow:var(--fv-sh1);font-weight:var(--fv-fw-3,600)}
+:root:not([data-theme=light]) .fv-tour-layer .fv-tour-seg button[aria-pressed=true]{background:var(--fv-ctl-press)}
+.fv-tour-pop .fv-tour-quad{display:grid;grid-template-columns:1fr 1fr;gap:var(--fv-sp-4,4px)}
+.fv-tour-pop .fv-tour-quad figure{position:relative;margin:0;aspect-ratio:16/9;border-radius:var(--fv-rad-xs,6px);overflow:hidden;background:rgb(var(--fv-tint))}
+.fv-tour-pop .fv-tour-quad :is(img,video){position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;border:0;border-radius:0}
+.fv-tour-pop .fv-tour-quad figcaption{position:absolute;left:var(--fv-sp-4,4px);bottom:var(--fv-sp-4,4px);height:20px;padding:0 var(--fv-sp-8,8px);border-radius:var(--fv-rad-xs,6px);
+  background:var(--fv-on-pic,rgb(0 0 0 / .5));color:#fff;font-size:var(--fv-fs-1,12px);line-height:20px}
+.fv-tour-pop .fv-tour-pair{min-height:0;display:grid;grid-template-columns:1fr 20px 1fr;align-items:center;gap:var(--fv-sp-4,4px)}
+.fv-tour-pop .fv-tour-pair .fv-tour-to{display:grid;place-items:center;color:var(--fv-fg3)}
+.fv-tour-pop .fv-tour-live{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+@media(prefers-reduced-motion:reduce){.fv-tour-layer,.fv-tour-layer *{transition:none!important;animation:none!important}.fv-tour-layer .fv-tour-ghost{transform:none;opacity:1}}
+/* Phones: the card spans the window less 12 px a side; the wide card's example shrinks; 40 px buttons. */
+@media(max-width:719px){
+  .fv-tour-layer .fv-tour-pop,.fv-tour-layer .fv-tour-pop[data-shape=wide],.fv-tour-layer .fv-tour-pop[data-shape=text]{width:calc(100vw - 24px);max-width:none}
+  .fv-tour-layer .fv-tour-pop[data-shape=wide]{grid-template-columns:120px minmax(0,1fr);column-gap:var(--fv-sp-12,12px)}
+  .fv-tour-layer .fv-tour-btn{height:40px}
+  .fv-tour-layer .fv-tour-x{width:40px;height:40px;margin:-8px -8px 0 0}
+}
+/* Material: the card is solid by default (decided up front, never sampled when a card first appears); glass only
+   where real-device frame times have cleared it: <html data-fv-tour-glass="on">. */
+:root:not([data-fv-tour-glass=on]) .fv-tour-layer .fv-tour-pop{-webkit-backdrop-filter:none;backdrop-filter:none;background:rgb(var(--fv-solid3))}
+:root:not([data-fv-tour-glass=on]) .fv-tour-layer .fv-tour-notch{background:rgb(var(--fv-solid3))}

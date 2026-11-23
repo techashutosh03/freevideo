@@ -1,0 +1,46 @@
+// The prompt, size and duration an earlier video was made from, to fill back into the creation panel.
+const IDENTITY = /^FreeVideo\/(\d{4}-\d{2}-\d{2}\/[0-9a-f]{32})\/video\.mp4$/;
+
+// Frames a duration in seconds becomes (the model takes 17k + 5).
+export function framesOf(seconds) {
+    const requested = Math.ceil(Number(seconds) * 24);
+    return requested + ((5 - requested) % 17 + 17) % 17;
+}
+
+// Null when the video kept no prompt, or is not a saved creation.
+export async function savedSettings(api, record) {
+    const id = IDENTITY.exec(record?.video || '')?.[1], g = record.geometry;
+    if (!id || !(g?.width > 0) || !(g?.height > 0)) return null;
+    try {
+        const reply = await api.fetchApi('/freevideo/library/prompt?' + new URLSearchParams({id}), {cache: 'no-store'});
+        if (!reply.ok) return null;
+        const {prompt, seed} = await reply.json();
+        if (typeof prompt !== 'string' || !prompt) return null;
+        // The panel keeps seconds to three decimals, so the frames it will ask for are those of that rounded duration.
+        const raw = Number(g.frames) > 0 ? Number(g.frames) / 24 : Number(g.seconds);
+        const seconds = raw > 0 ? Math.floor(raw * 1000) / 1000 : null;
+        // The seed comes back once, so the same prompt and size make the same video; an older video kept none.
+        return {text: prompt, width: Number(g.width), height: Number(g.height), seconds, frames: seconds === null ? null : framesOf(seconds),
+            seed: Number.isSafeInteger(seed) && seed >= 0 ? seed : null};
+    } catch { return null; }
+}
+
+// The prompt a saved creation was made from ('' when it kept none, or is not a saved creation). Asked once per video.
+const prompts = new Map();
+export function savedPrompt(api, record) {
+    const id = IDENTITY.exec(record?.video || '')?.[1];
+    if (!id) return Promise.resolve('');
+    if (!prompts.has(id)) {
+        prompts.set(id, api.fetchApi('/freevideo/library/prompt?' + new URLSearchParams({id}), {cache: 'no-store'})
+            .then(reply => reply.ok ? reply.json() : null).then(body => typeof body?.prompt === 'string' ? body.prompt.trim() : '')
+            .catch(() => { prompts.delete(id); return ''; }));
+    }
+    return prompts.get(id);
+}
+
+// Whether filling the saved settings would change anything the panel can still change.
+export function differs(saved, now) {
+    return saved.text !== now.text || saved.width !== now.width || saved.height !== now.height
+        || (saved.frames !== null && saved.frames !== now.frames)
+        || (saved.seed != null && now.seed != null && saved.seed !== now.seed);
+}

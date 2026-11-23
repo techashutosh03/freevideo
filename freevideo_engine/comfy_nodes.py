@@ -1,0 +1,703 @@
+"""Optional ComfyUI V3 nodes. Never import these from the standalone CLI."""
+import logging
+from pathlib import Path
+
+from comfy_api.latest import ComfyExtension, InputImpl, io, ui
+
+from . import comfy_bridge, job_record, usage_habit, workflow_repairs
+from .comfy_continuation import node_frames, optional_text, part_steps, request_options
+from .default_prompt import DEFAULT_PROMPT
+from .original_audio import audio_use_option
+
+References = io.Custom('FREEVIDEO_REFERENCES')
+LoRAs = io.Custom('FREEVIDEO_LORAS')
+Media = io.Custom('FREEVIDEO_MEDIA')
+NO_LORA = 'None'
+STEP_CACHE_OPTIONS = ('none', 'easycache-av', 'fbcache')
+
+
+def clean_prompt(json_data):
+    """POST /prompt hook: read Total frames before ComfyUI converts it.
+
+    ComfyUI rejects '' or None for an integer input before validate_inputs runs, so the value is
+    read here the same way the node reads it (node_frames): anything that is not a count the model
+    makes follows Duration. The optional inputs an older workflow holds in a form the node refuses
+    (workflow_repairs) fall back to their defaults and are noted for the diagnostic report. Links and
+    other nodes are left as they are.
+    """
+    prompt = json_data.get('prompt') if isinstance(json_data, dict) else None
+    repaired = []
+    for node in prompt.values() if isinstance(prompt, dict) else ():
+        inputs = node.get('inputs') if isinstance(node, dict) and node.get('class_type') == 'FreeVideoGenerate' else None
+        if isinstance(inputs, dict) and 'frames' in inputs and not isinstance(inputs['frames'], list):
+            frames = node_frames(inputs['frames'])
+            if frames != inputs['frames'] or type(frames) is not type(inputs['frames']):
+                logging.info('[FreeVideo] Total frames %r is not a frame count; the length follows Duration.',
+                             str(inputs['frames'])[:40])
+                inputs['frames'] = frames
+        if isinstance(inputs, dict):
+            repaired += workflow_repairs.repair_inputs(inputs)
+    if repaired:
+        logging.info('[FreeVideo] Optional inputs from an older workflow were reset to their defaults: %s.',
+                     ', '.join(sorted(set(repaired))))
+        try:
+            workflow_repairs.record(comfy_bridge.installation_root(), 'request', repaired)
+        except (OSError, ValueError) as error:
+            logging.warning('[FreeVideo] Could not note the reset inputs: %s', error)
+    return json_data
+
+
+def register_prompt_cleanup():
+    from server import PromptServer
+    server = PromptServer.instance
+    if server is None or getattr(server, '_freevideo_prompt_cleanup', False):
+        return
+    server._freevideo_prompt_cleanup = True
+    server.add_on_prompt_handler(clean_prompt)
+
+
+def schedule_startup_prefetch(delay=15.):
+    """Once after the engine starts, read what the first request reads into the OS file cache, as far as
+    free memory goes. A request, or the busy queue, cancels it through the same stop as the idle read."""
+    from .encoder_prewarm import IDLE, startup_files
+    try:
+        from server import PromptServer
+        server = PromptServer.instance
+        root, machine = comfy_bridge.installation()
+        habit = usage_habit.load()
+        files = startup_files(machine, usage_habit.dominant(habit['recent'] if habit else None))
+        files = [item for item in files if item.is_file()]
+        if not files:
+            return False
+    except (ImportError, OSError, RuntimeError, ValueError, KeyError, TypeError, AttributeError):
+        return False  # Optional preparation cannot stop the engine from starting.
+    def busy():
+        return server is not None and server.prompt_queue.get_tasks_remaining() > 0
+    return IDLE.schedule(files, root / 'startup-prewarm.json', busy=busy, purpose='startup', delay=delay)
+
+
+def step_cache_option(value):
+    """Bridge keyword for the Step cache widget; a workflow without it, with 'none' or with a value that is
+    not an option adds nothing. Workflows saved before the widget existed hold '' in its position."""
+    return {'step_cache': value} if value in STEP_CACHE_OPTIONS and value != 'none' else {}
+
+
+UPSCALE_OPTIONS = ('2', '1.5', '1.2')  # two_pass.SCALES as the widget shows them
+
+
+def upscale_option(value):
+    """Bridge keyword for the Upscale factor widget; 2, a value that is not an option, or a workflow without
+    the widget adds nothing. Workflows saved before it existed hold '' in its position."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return {}
+    text = value if isinstance(value, str) else '%g' % value
+    return {'upscale_factor': float(text)} if text in UPSCALE_OPTIONS and text != '2' else {}
+
+
+class FreeVideoGenerate(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id='FreeVideoGenerate', display_name='FreeVideo · Video + Audio',
+            category='FreeVideo', search_aliases=['VDN', 'H3', 'i2v', 'fl2v', 'ref2v'],
+            description='Generate a video with audio using your FreeVideo installation. Memory placement, '
+                        'caches and validated optimizations are automatic. Outputs and diagnostics are retained.',
+            inputs=[
+                io.String.Input('text', display_name='Prompt', multiline=True, default=DEFAULT_PROMPT,
+                    tooltip='Describe the scene, motion, dialogue, sound and music.'),
+                io.Int.Input('width', display_name='Width', default=1344, min=256, max=4096, step=32),
+                io.Int.Input('height', display_name='Height', default=768, min=256, max=4096, step=32),
+                io.Float.Input('seconds', display_name='Duration (s)', default=10., min=1.625, max=60., step=.1,
+                    tooltip='24 fps. The length is rounded up slightly to a length the model can generate; '
+                            'for example, 10 s becomes 10.125 s. Videos longer than 15 s are experimental.'),
+                io.Int.Input('seed', display_name='Seed', default=2026090903, min=0, max=2**53-1, control_after_generate=True),
+                io.Image.Input('first', display_name='First frame', optional=True,
+                    tooltip='One image. Center-cropped to the selected canvas; enables I2VA.'),
+                io.Image.Input('last', display_name='Last frame', optional=True,
+                    tooltip='One image. With first frame enables FL2VA; alone enables L2VA.'),
+                References.Input('references', optional=True,
+                    tooltip='Experimental Ref2VA. Use FreeVideo Reference nodes. VDN is not reference-trained.'),
+                LoRAs.Input('loras', display_name='LoRAs', optional=True),
+                io.Conditioning.Input('conditioning', optional=True,
+                    tooltip='Native MiniMax-H3 conditioning from a compatible community node, with keyframes or references. '
+                            'When it is connected, the prompt and media inputs are not used. '
+                            'Conditioning from generic CLIP nodes is rejected.'),
+                Media.Input('media', optional=True, tooltip='Unified Media panel: keyframes or ordered references.'),
+                io.Boolean.Input('two_pass', display_name='Two-pass acceleration', default=True, optional=True,
+                    tooltip='Usually faster: generate at a lower resolution, then upscale and finish sampling at the target size.'),
+                io.Int.Input('base_steps', display_name='First-pass steps', default=8, min=1, max=32, optional=True,
+                    tooltip='Default: 8. Two-pass acceleration runs only with 8 first-pass steps; any other count '
+                            'generates in one pass of that many steps. Changing sampling steps may reduce generation quality.'),
+                io.Int.Input('refine_steps', display_name='Second-pass steps', default=3, min=1, max=31, optional=True,
+                    tooltip='Default: 3. Three steps use the independent refinement schedule. Changing sampling steps may reduce generation quality.'),
+                io.Boolean.Input('force_regenerate', display_name='Force regeneration', default=False, optional=True,
+                    tooltip='Generate again even when an identical completed video is saved locally.'),
+                io.Boolean.Input('preview', display_name='Two-pass: preview first pass', default=False, optional=True,
+                    tooltip='Part of two-pass acceleration: pause after the half-resolution first pass and save it as a preview. '
+                            'Run the second pass from the result when it looks right; it continues from the same latents.'),
+                io.String.Input('refine_from', display_name='Second pass of preview', default='', optional=True, advanced=True,
+                    socketless=True, tooltip='Set by the Run second pass button: the preview video to continue. '
+                                             "The second pass uses the preview's own prompt, seed, size and inputs."),
+                io.String.Input('continue_from', display_name='Continue from video', default='', optional=True, advanced=True,
+                    tooltip='For long videos generated in segments: continue after this MP4. Use its ComfyUI output '
+                            'subfolder/filename or an absolute path inside ComfyUI output or input.'),
+                io.Int.Input('frames', display_name='Total frames', default=0, min=0, max=2**31-1, optional=True, advanced=True,
+                    tooltip='For long videos generated in segments: 0 uses Duration; otherwise use 5 + 17n, at least 39. '
+                            'Includes the 22 overlap frames when continuing; the saved MP4 contains only new frames.'),
+                io.Boolean.Input('first_frame_reference', display_name='First-frame reference', default=False,
+                    optional=True, advanced=True, tooltip='Reduces drift.'),
+                io.Boolean.Input('voice_reference', display_name='Voice reference', default=False,
+                    optional=True, advanced=True, tooltip='Keeps the opening voice consistent in continued dialogue.'),
+                io.Boolean.Input('hide_tail', display_name='Hide dialogue tail', default=False,
+                    optional=True, advanced=True, tooltip='Generates and discards 17 extra frames to keep dialogue moving between parts.'),
+                # Last, so the widget values of saved workflows keep their positions.
+                io.Combo.Input('step_cache', display_name='Step cache', options=list(STEP_CACHE_OPTIONS), default='none',
+                    optional=True, advanced=True,
+                    tooltip='Reuses work between similar sampling steps to finish sooner, with a small change to the result.'),
+                io.Combo.Input('upscale_factor', display_name='Upscale factor', options=list(UPSCALE_OPTIONS), default='2',
+                    optional=True, advanced=True,
+                    tooltip='Two-pass only: a smaller factor starts from a larger first pass, for more detail and a longer run.'),
+                io.Boolean.Input('allow_empty_prompt', display_name='Allow empty prompt', default=False,
+                    optional=True, advanced=True, tooltip='Generates from an empty prompt instead of asking for one.'),
+                io.String.Input('upscale_from', display_name='Upscale video', default='', optional=True, advanced=True,
+                    socketless=True, tooltip='Set by Upscale in Creations: the finished video to make larger. '
+                                             "The upscale uses the video's own prompt, seed, length and sound."),
+                io.String.Input('upscale_to', display_name='Upscale size', default='', optional=True, advanced=True,
+                    socketless=True, tooltip='Set by Upscale in Creations: empty for one 1.5x step, 4k for the 4K size '
+                                             'made frame by frame by a small upscale model.'),
+            ],
+            outputs=[io.Video.Output('video'), io.String.Output('report', display_name='Report JSON')],
+            hidden=[io.Hidden.unique_id, io.Hidden.prompt, io.Hidden.extra_pnginfo],
+            is_output_node=True, not_idempotent=True,
+        )
+
+    @classmethod
+    def validate_inputs(cls, text, width, height, seconds, seed, continue_from='', frames=0, two_pass=True,
+                        preview=False, refine_from='', base_steps=8, refine_steps=3, step_cache='none',
+                        upscale_factor='2', allow_empty_prompt=False, upscale_from='', upscale_to=''):
+        # ComfyUI marks every input named here when a check fails, so only the checked widgets are
+        # listed. Linked pictures, media and conditioning have no value before the run anyway.
+        # step_cache and upscale_factor are named so ComfyUI skips their option lists: an older saved
+        # workflow puts '' there, and execute uses no cache and the 2x upscale for a value that is not an option.
+        refine_from = optional_text(refine_from)
+        if optional_text(upscale_from):
+            # The bridge reads the finished video's own request; the node's widgets do not apply.
+            return True if optional_text(upscale_to) in (None, '', '4k') else 'Upscale size must be empty or 4k'
+        try:
+            options = request_options(continue_from, node_frames(frames))
+            if options.get('continue_from'):
+                # A continued part turns on two passes and takes keyframes as pictures; only NVIDIA keeps its preview (execute).
+                from .continuation import previews_supported
+                two_pass, preview = True, preview is True and previews_supported()
+                base_steps, refine_steps = part_steps(base_steps, refine_steps, step_cache)[:2]
+                options.update(two_pass=True, preview=preview, refine_from=refine_from or None,
+                               media=dict(first=False, last=False, conditioning_info=False))
+            comfy_bridge.validate_request(text, width, height, seconds, seed, **options,
+                                          allow_empty_prompt=allow_empty_prompt is True)
+            if not refine_from:
+                from .two_pass import validate_steps
+                validate_steps(base_steps, refine_steps, two_pass)
+                if preview and not two_pass:
+                    return 'Preview first needs two-pass acceleration.'
+            comfy_bridge.installation()
+        except (OSError, ValueError, KeyError) as error:
+            from .continuation import UNSUPPORTED
+            if str(error).startswith(UNSUPPORTED):
+                # A refusal of the whole route (device, refine) is not one input's fault: the run stops
+                # at this node with the same guidance instead of marking every widget.
+                return True
+            return str(error)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, **kwargs):
+        # Always inspect current input/model content and output integrity in the
+        # bridge. Comfy's graph cache cannot detect a deleted or changed MP4.
+        return float('nan')
+
+    @classmethod
+    @job_record.video_node
+    def execute(cls, text, width, height, seconds, seed, first=None, last=None,
+                references=None, loras=None, conditioning=None, media=None, two_pass=True,
+                force_regenerate=False, base_steps=8, refine_steps=3, preview=False, refine_from='',
+                continue_from='', frames=0, first_frame_reference=False, voice_reference=False, hide_tail=False,
+                step_cache='none', upscale_factor='2', allow_empty_prompt=False, upscale_from='', upscale_to=''):
+        from .comfy_environment import control_process
+        from .gpu_pool import pool_enabled
+        if control_process() and pool_enabled():
+            raise RuntimeError('Generation requires a dispatched executor')
+        from server import PromptServer
+        from .comfy_chain import block_context, block_finished, report_fields
+        refine_from, continue_from = optional_text(refine_from), optional_text(continue_from)
+        upscale_from = optional_text(upscale_from)
+        upscale_to = optional_text(upscale_to) if upscale_from else None
+        # The 4K size is made by a small frame-wise model beside whatever else is loaded (frame_upscale).
+        frames_upscale = upscale_to == '4k'
+        if upscale_from:
+            # Upscaling a finished video is its own request: three refinement steps, no preview or continuation.
+            two_pass, preview, base_steps, refine_steps, step_cache = True, False, 8, 3, 'none'
+            refine_from = continue_from = ''
+            frames = 0
+        node_id = cls.hidden.unique_id
+        chain = block_context(PromptServer.instance, node_id)
+        options = request_options(continue_from, node_frames(frames))
+        notes = []
+        if options.get('continue_from') or chain is not None and chain.get('count', 1) > 1:
+            base_steps, refine_steps, step_cache, note = part_steps(base_steps, refine_steps, step_cache)
+            if note:
+                two_pass = True
+                notes.append(note)
+        if options.get('continue_from') and not two_pass:
+            two_pass = True
+            notes.append('Continuing a video needs "Two-pass acceleration", so it is on for this part.')
+        if options.get('continue_from') and preview:
+            from .continuation import previews_supported
+            if not previews_supported():
+                preview = False
+                notes.append('A continued part is made in full, without stopping at the preview.')
+        from .two_pass import validate_steps
+        if not refine_from and not upscale_from:
+            validate_steps(base_steps, refine_steps, two_pass)
+        from .background_compile import COMPILE
+        # Returns once the idle compile released the GPU and the engine lease.
+        COMPILE.stop(final=True)
+        from . import video_warm
+        # A warm-up for this video gives the lease back; the worker and the encoder it placed stay for the video.
+        video_warm.stop()
+        from .comfy_media import continued, export
+        import folder_paths
+        import comfy.model_management as memory
+        from comfy.utils import ProgressBar
+        from .comfy_progress import publish
+        from .encoder_prewarm import IDLE
+        from .resident_process import OWNER
+        from .prompt_vlm.service import stop_prestart_for_generation
+        if not frames_upscale:
+            # Pictures, prompt help, music and sound separation keep their models for the 4K upscale.
+            stop_prestart_for_generation(PromptServer.instance)
+            try:   # the image option must never keep a video from starting
+                from .image_gen.service import stop_prestart_for_generation as stop_image_for_generation
+                # An idle picture model stays when the planner places this video the same beside it; only a plain
+                # text-to-video request is planned here, anything with media or a continuation stops it as before.
+                plain = not any((first, last, references, loras, conditioning, media, refine_from, upscale_from,
+                                 options.get('continue_from'), chain is not None and chain.get('count', 1) > 1))
+                video = dict(width=width, height=height, seconds=seconds, steps=base_steps, two_pass=two_pass,
+                             refine=refine_steps, step_cache=step_cache_option(step_cache).get('step_cache'),
+                             upscale=upscale_option(upscale_factor).get('upscale_factor', 2)) if plain else None
+                stop_image_for_generation(PromptServer.instance, video=video)
+            except Exception as error:
+                logging.warning('[FreeVideo] Could not stop image generation before the video: %s', error)
+            try:   # nor music for a cut, which composes again after the video
+                from .music.service import stop_for_generation as stop_music_for_generation
+                stop_music_for_generation(PromptServer.instance)
+            except Exception as error:
+                logging.warning('[FreeVideo] Could not stop music before the video: %s', error)
+            try:   # the picture worker keeps the card longer only for people who mostly make pictures
+                from .image_gen.keep import note, path
+                note('video', path(comfy_bridge.installation_root()))
+            except Exception as error:
+                logging.warning('[FreeVideo] Could not record the video for the picture worker: %s', error)
+            try:   # nor splitting a clip's sound, which starts again after the video
+                from .stems.service import stop_for_generation as stop_stems_for_generation
+                stop_stems_for_generation(PromptServer.instance)
+            except Exception as error:
+                logging.warning('[FreeVideo] Could not stop sound separation before the video: %s', error)
+        prewarm = {}
+        result_reused = [False]
+        result_report = [None]
+        total_steps = 1 if frames_upscale else refine_steps if upscale_from else base_steps + (refine_steps if two_pass and not preview else 0)
+        if two_pass and not preview and not refine_from and not upscale_from:
+            # A small canvas runs in one pass even with two-pass on.
+            from .geometry import geometry
+            from .two_pass import plan, sampling_canvas
+            try:
+                # Pre-encoded conditioning is tied to the requested canvas, so it is never rendered larger.
+                sampled = sampling_canvas(geometry(width, height, seconds=seconds),
+                                          conditioned=conditioning is not None)[0]
+                total_steps = plan(sampled, True, base_steps=base_steps,
+                                   refine_steps=refine_steps)['total_steps']
+            except ValueError:
+                pass
+        bar = ProgressBar(total_steps, node_id=node_id)
+        last_message = [None]
+        last_count = [None]
+        # Without FreeVideo's page scripts the nodes still generate; say why the
+        # creative workspace is missing in ComfyUI's own node text.
+        from .comfy_launcher_api import page_notice
+        notice = page_notice(PromptServer.instance)
+        if notice:
+            logging.warning('[FreeVideo] %s', notice)
+            PromptServer.instance.send_progress_text(notice, node_id)
+        if two_pass and not refine_from and not preview and not upscale_from:
+            from .two_pass import one_pass_note
+            step_note = one_pass_note(base_steps)
+            if step_note:
+                logging.warning('[FreeVideo] %s', step_note)
+                notice = notice + '\n' + step_note if notice else step_note
+        notice = notice + '\n' if notice else ''
+        def said():
+            return notice + ''.join(line + '\n' for line in notes)
+        def progress(message):
+            if message.get('report_id'):
+                result_report[0] = message['report_id']
+            if message.get('result_cache_hit'):
+                result_reused[0] = True
+            # The sampling label also serves terminal readers and can contain
+            # a stage percentage. Native node text keeps only its step detail.
+            label = 'Sampling' if message.get('phase') == 'sampling' else message.get('label') or 'Generating video'
+            count = (message.get('done'), message.get('total'))
+            if message.get('done') is not None and count != last_count[0]:
+                bar.update_absolute(message['done'], message['total'])
+                last_count[0] = count
+            if message != last_message[0]:
+                server = PromptServer.instance
+                publish(server, node_id, message)
+                if server is not None:
+                    detail = message.get('detail')
+                    server.send_progress_text(said() + label + (' · ' + detail if detail else ''), node_id)
+                last_message[0] = dict(message)
+        def release():
+            cpu_prewarm = IDLE.stop()
+            gpu_prewarm = OWNER.stop_prewarm()
+            prewarm.update(gpu_prewarm or cpu_prewarm or {})
+            from .comfy_residency import keep_engine_cache
+            with keep_engine_cache():
+                memory.unload_all_models()
+                memory.soft_empty_cache()
+        metadata = cls.hidden.extra_pnginfo or {}
+        workflow_nodes = (metadata.get('workflow') or {}).get('nodes', [])
+        properties = next((row.get('properties', {}) for row in workflow_nodes
+                           if str(row.get('id')) == str(node_id)), {})
+        versions = properties.get('freevideo_prompt_versions', {})
+        rewrite_report = dict(report_id=properties.get('freevideo_prompt_report'),
+                              selected=versions.get('selected') if versions.get('enabled') else 'original')
+        try:
+            from comfy.cli_args import args as comfy_args
+            embed = not comfy_args.disable_metadata
+        except (ImportError, AttributeError):
+            embed = True
+        graph = dict(prompt=getattr(cls.hidden, 'prompt', None), workflow=metadata.get('workflow')) if embed else None
+        if graph and refine_from:
+            # The upscaled video is the full request's result: embed that
+            # workflow, not one that points at this machine's preview file.
+            graph = comfy_bridge.without_upscale(graph, node_id, refine_from)
+        if graph and upscale_from:
+            graph = comfy_bridge.without_work_upscale(graph, node_id, upscale_from)
+        output_root = Path(folder_paths.get_output_directory()).resolve()
+
+        def kept(exported):
+            if not options.get('continue_from'):
+                return exported
+            before = len(notes)
+            result = continued(exported, notes)
+            if len(notes) > before and PromptServer.instance is not None:
+                PromptServer.instance.send_progress_text(said().rstrip('\n'), node_id)
+            return result
+        for line in notes:
+            logging.info('[FreeVideo] %s', line)
+        if notes and PromptServer.instance is not None:
+            PromptServer.instance.send_progress_text(said().rstrip('\n'), node_id)
+        publish(PromptServer.instance, node_id, {'label': 'Preparing video', 'new_request': True})
+        try:
+            output = comfy_bridge.generate(text, width, height, seconds, seed, output_root,
+                metadata=metadata.get('workflow', metadata), progress=progress, two_pass=two_pass,
+                prompt_rewrite_report=rewrite_report,
+                encoder_prewarm=prewarm, force_regenerate=force_regenerate,
+                base_steps=base_steps, refine_steps=refine_steps, comfy_metadata=graph,
+                preview=bool(preview), refine_from=refine_from or None,
+                interrupted=memory.throw_exception_if_processing_interrupted, release_models=release,
+                export_inputs=lambda run, canvas: kept(export(run, canvas, first=first, last=last, references=references,
+                    loras=loras, conditioning=conditioning, assets=media, continuing=bool(options.get('continue_from')))),
+                **options,
+                # Only a part that continues another can use it; other requests keep the existing bridge call.
+                **({'first_frame_reference': True} if first_frame_reference is True and options.get('continue_from') else {}),
+                **({'voice_reference': True} if voice_reference is True and options.get('continue_from') else {}),
+                **({'hide_tail': True} if hide_tail is True else {}),
+                **({'allow_empty_prompt': True} if allow_empty_prompt is True else {}),
+                **({'upscale_from': upscale_from} if upscale_from else {}),
+                **({'upscale_to': '4k'} if frames_upscale else {}),
+                **step_cache_option(step_cache),
+                **upscale_option(upscale_factor),
+                **({'report_extra': {'chain': report_fields(chain)}} if chain is not None else {}))
+            relative = output.relative_to(output_root)
+            report = output.with_suffix('.request.json').read_text(encoding='utf-8')
+            import json
+            measured = json.loads(report)
+            from .comfy_assets import output_summary, saved_video
+            preview = ui.PreviewVideo([saved_video(output, output_root)]).as_dict()
+            preview['freevideo_summary'] = [output_summary(measured, relative)]
+            if 'continuation' in preview['freevideo_summary'][0] and options.get('frames'):
+                preview['freevideo_summary'][0]['continuation']['requested_frames'] = options['frames']
+            preview['freevideo_summary'][0]['result_cache_hit'] = result_reused[0]
+            from .comfy_progress import REPORTS
+            known = REPORTS.tokens(output_root).get(relative.as_posix().removeprefix('FreeVideo/'))
+            if known:
+                preview['freevideo_summary'][0]['report_id'] = known
+        except BaseException as error:
+            from .resident_process import OWNER
+            OWNER.finished()
+            cancelled = isinstance(error, KeyboardInterrupt) or type(error).__name__ in ('InterruptProcessingException', 'CancelledError')
+            phase = 'cancelled' if cancelled else 'failed'
+            publish(PromptServer.instance, node_id, {'label': 'Generation cancelled' if cancelled else 'Generation stopped',
+                    'phase': phase, 'overall': {'status': phase}})
+            raise
+        publish(PromptServer.instance, node_id, {'label': 'Reused previous result' if result_reused[0] else 'Video saved', 'phase': 'complete',
+                'overall': {'status': 'complete', 'fraction': 1.}, 'result': preview['freevideo_summary'][0]})
+        block_finished(chain, node_id, relative.as_posix(), result_report[0], measured.get('continuation'))
+        from .encoder_prewarm import warm_target
+        target = warm_target(measured)
+        from .resident_process import OWNER
+        server = PromptServer.instance
+        def busy():
+            return server is not None and server.prompt_queue.get_tasks_remaining() > 0
+        # A finished request keeps the models for the next one while memory is ample;
+        # a failed one, a tight host or another program's growth gives it back at once.
+        try:
+            # The running prompt is this one; only prompts still waiting are a next part.
+            queued = server is not None and bool(server.prompt_queue.get_current_queue()[1])
+        except (AttributeError, TypeError, ValueError, IndexError):
+            queued = False
+        try:
+            # Agent videos wait in the agent's own list until the running one ends.
+            queued = queued or any(row['kind'] == 'generate' and row['status'] == 'waiting'
+                                   for row in server._freevideo_agent.active())
+        except (AttributeError, TypeError, KeyError):
+            pass
+        next_part = 'queued' if queued else ('continuing' if chain is not None and chain.get('index', 0) + 1 < chain.get('count', 0)
+                                               or chain is None and options.get('continue_from') else None)
+        try:
+            gpu = comfy_bridge.installation()[1].get('gpu_uuid')
+        except (OSError, ValueError, KeyError, TypeError):
+            gpu = None
+        try:
+            admission = json.loads(output.with_suffix('.engine.json').read_text(encoding='utf-8')).get('resident_admission')
+        except (OSError, ValueError, AttributeError):
+            admission = None
+        kept = OWNER.finished(next_part=next_part, gpu=gpu, warm=True, decisions=admission,
+                              agent=server is not None and str(getattr(server, 'client_id', '') or '').startswith('agent:'))
+        from .comfy_environment import executor_device
+        if target and not result_reused[0] and not executor_device():
+            client = server.client_id if server is not None else None
+            def warmed(value):
+                if server is not None:
+                    server.send_sync('freevideo_prewarm', dict(value, node=node_id), sid=client)
+            try:
+                purpose, path = target
+                if purpose == 'upscale':
+                    IDLE.schedule(path, output.with_suffix('.prewarm.json'),
+                                  ram_budget=measured.get('profile', {}).get('inference_ram_budget_gb', 0) * 1e9,
+                                  busy=busy, notify=warmed, purpose='upscale')
+                elif (isinstance(kept, dict) and kept.get('action') == 'kept' and next_part is None
+                        and usage_habit.dominant((usage_habit.load() or {}).get('recent')) == 'prompt'):
+                    # Prompts change often: place the encoder on the card while the kept worker
+                    # idles. It yields to any new task, and only what fits free memory is placed.
+                    root, machine = comfy_bridge.installation()
+                    environment = comfy_bridge.engine_environment(root, comfy_bridge.source_root())
+                    environment.update(FREEVIDEO_HOME=str(root), PYTHONPATH=str(comfy_bridge.source_root()))
+                    OWNER.warm_encoder(output, machine['python'], environment, busy=busy, notify=warmed)
+                else:
+                    IDLE.schedule(path, output.with_suffix('.prewarm.json'),
+                                  ram_budget=measured.get('profile', {}).get('inference_ram_budget_gb', 0) * 1e9,
+                                  busy=busy, notify=warmed)
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+                pass  # A saved video remains successful if idle warming cannot start.
+        return io.NodeOutput(InputImpl.VideoFromFile(str(output)), report, ui=preview)
+
+
+class FreeVideoMedia(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        from .comfy_assets import REFERENCE_INPUTS
+        return io.Schema(node_id='FreeVideoMedia', display_name='FreeVideo · Media', category='FreeVideo',
+            description='Connect IMAGE or AUDIO outputs from generation, editing or loading nodes, or upload files. '
+                        'Several reference images can be connected; uploaded references come first, then connected images from top to bottom. '
+                        'Choose first/last frames or experimental references. Empty media means text to video.',
+            inputs=[io.String.Input('assets', default='[]'),
+                    io.Image.Input('first', display_name='First frame', optional=True,
+                        tooltip='Connect any compatible IMAGE output. Select one frame from a batch first.'),
+                    io.Image.Input('last', display_name='Last frame', optional=True,
+                        tooltip='Connect an IMAGE output for the last frame.'),
+                    *[io.Image.Input(name, display_name=f'Reference image {index}', optional=True,
+                        tooltip='When one input receives several images, each counts as one reference.')
+                      for index, name in enumerate(REFERENCE_INPUTS, 1)],
+                    io.Audio.Input('reference_audio', display_name='Reference audio', optional=True,
+                        tooltip='Voice, music or rhythm reference, up to 15 seconds. Connect a Load Audio '
+                                'or other AUDIO output. Describe its role using <Audio 1> in the prompt. '
+                                'Experimental; does not guarantee lip sync.'),
+                    io.Combo.Input('audio_use', display_name='Audio use', options=['reference', 'original'], default='reference', optional=True)],
+            outputs=[Media.Output('media')])
+
+    @classmethod
+    def validate_inputs(cls, assets, **kwargs):
+        from .comfy_assets import resolve_assets
+        import folder_paths
+        try:
+            resolve_assets(assets, folder_paths.get_input_directory())
+        except (OSError, ValueError) as error:
+            return str(error)
+        return True
+
+    @classmethod
+    def fingerprint_inputs(cls, **kwargs):
+        # Resolve current files again; the engine content-checks reusable inputs.
+        return float('nan')
+
+    @classmethod
+    def execute(cls, assets, first=None, last=None, reference=None, reference_audio=None, audio_use='reference',
+                **images):
+        from .comfy_assets import resolve_assets, connect_assets
+        import folder_paths
+        return io.NodeOutput(connect_assets(resolve_assets(assets, folder_paths.get_input_directory()),
+                                            first=first, last=last, reference=reference,
+                                            reference_audio=reference_audio, audio_use=audio_use_option(audio_use), **images))
+
+
+class FreeVideoReference(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id='FreeVideoReference', display_name='FreeVideo · Reference (experimental)',
+            category='FreeVideo', is_experimental=True,
+            description='Append one image, video or audio reference in order. A clip is cut to the generated length, at most 15 s, and the cut is reported. '
+                        'Connect the stack to Generate. VDN reference quality is experimental.',
+            inputs=[io.Image.Input('image', optional=True), io.Video.Input('video', optional=True),
+                    io.Audio.Input('audio', optional=True), References.Input('previous', optional=True),
+                    io.Combo.Input('use', options=['reference', 'original'], default='reference', optional=True)],
+            outputs=[References.Output('references')])
+
+    @classmethod
+    def execute(cls, image=None, video=None, audio=None, previous=None, use='reference'):
+        values = [(kind, value) for kind, value in (('image', image), ('video', video), ('audio', audio)) if value is not None]
+        if len(values) != 1:
+            raise ValueError('Connect exactly one image, video or audio to each Reference node')
+        result = list(previous or [])
+        if len(result) >= 32:
+            raise ValueError('At most 32 ordered references; memory is checked against the actual request')
+        kind, value = values[0]
+        use = audio_use_option(use)
+        from .original_audio import fields, original
+        options = fields(dict(kind=kind, **({'use': use} if use != 'reference' or kind == 'audio' else {})))
+        result.append({'kind': kind, 'value': value, **options})
+        original(dict(references=result))
+        return io.NodeOutput(result)
+
+
+class FreeVideoLoRA(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        import folder_paths
+        names = [name for name in folder_paths.get_filename_list('loras') if name.lower().endswith('.safetensors')]
+        return io.Schema(node_id='FreeVideoLoRA', display_name='FreeVideo · LoRA', category='FreeVideo',
+            description='FreeVideo needs no acceleration LoRA.',
+            inputs=[io.Combo.Input('lora', options=[NO_LORA, *names]),
+                    io.Float.Input('strength', default=1., min=-100., max=100., step=.05),
+                    LoRAs.Input('previous', optional=True)], outputs=[LoRAs.Output('loras')])
+
+    @classmethod
+    def execute(cls, lora, strength, previous=None):
+        if lora == NO_LORA:
+            return io.NodeOutput(list(previous or []))
+        import folder_paths
+        path = folder_paths.get_full_path_or_raise('loras', lora)
+        if strength != 0:
+            from .lora_check import require_usable
+            require_usable(path)
+        return io.NodeOutput(list(previous or []) + [{'path': str(Path(path).resolve()), 'strength': strength}])
+
+
+class FreeVideoLoRAStack(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id='FreeVideoLoRAStack', display_name='FreeVideo · LoRAs', category='FreeVideo',
+            description='FreeVideo needs no acceleration LoRA.',
+            inputs=[io.String.Input('adapters', default='[]'), LoRAs.Input('previous', optional=True)],
+            outputs=[LoRAs.Output('loras')])
+
+    @classmethod
+    def execute(cls, adapters, previous=None):
+        from .comfy_assets import resolve_loras
+        import folder_paths
+        from .lora_check import require_usable
+        result = resolve_loras(adapters, folder_paths.get_filename_list('loras'),
+            lambda name: folder_paths.get_full_path_or_raise('loras', name), previous)
+        for row in result[len(previous or []):]:
+            require_usable(row['path'])
+        return io.NodeOutput(result)
+
+    @classmethod
+    def fingerprint_inputs(cls, **kwargs):
+        return float('nan')  # The engine verifies current adapter content on each request.
+
+
+class FreeVideoFrames(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(node_id='FreeVideoFrames', display_name='FreeVideo · First / Last Frame', category='FreeVideo',
+            description='Extract just the first and last frames for image processing or the next video segment. '
+                        'The full decoded movie is not retained in RAM.',
+            inputs=[io.Video.Input('video')], outputs=[io.Image.Output('first'), io.Image.Output('last')])
+
+    @classmethod
+    def execute(cls, video):
+        import av
+        import torch
+        import tempfile
+        # save_to preserves native trims and crops; a temporary remux avoids
+        # ignoring edits when get_stream_source points at the untrimmed file.
+        with tempfile.TemporaryDirectory(prefix='FreeVideo frames ') as directory:
+            path = Path(directory) / 'frames.mp4'
+            video.save_to(str(path))
+            first = last = None
+            with av.open(str(path)) as container:
+                for frame in container.decode(video=0):
+                    last = frame.to_ndarray(format='rgb24')
+                    if first is None:
+                        first = last
+            if first is None:
+                raise ValueError('No picture could be read from this video file. Choose another video.')
+            return io.NodeOutput(*(torch.from_numpy(frame.copy()).float().div_(255)[None] for frame in (first, last)))
+
+
+def start_background_compile():
+    """Compile recent request shapes once this session is idle; see background_compile."""
+    import os
+    from .comfy_environment import control_process, executor_device
+    if control_process() or executor_device():
+        return False
+    from server import PromptServer
+    from .background_compile import COMPILE, OWED_DELAY, START_DELAY, compile_owed
+    if os.environ.get('FREEVIDEO_BACKGROUND_COMPILE', 'auto').lower() in ('0', 'off', 'false'):
+        return False
+    root, machine = comfy_bridge.installation()
+    if machine.get('device_backend') == 'mps' or machine.get('gpu_vendor') == 'amd' or machine.get('video_model') is False:
+        return False
+    source = comfy_bridge.source_root()
+    environment = comfy_bridge.engine_environment(root, source)
+    # This process's own GPU use is not another program's (background_room).
+    environment.update(FREEVIDEO_HOME=str(root), PYTHONPATH=str(source), FREEVIDEO_BACKGROUND_OWNER=str(os.getpid()))
+    def busy():
+        server = PromptServer.instance
+        return server is not None and server.prompt_queue.get_tasks_remaining() > 0
+    return COMPILE.start([machine['python'], '-B', '-m', 'freevideo_engine.precompile',
+                          '--config', str(root / 'machine.json'), '--background'],
+                         environment=environment, cwd=str(source), log=root / 'precompile.log',
+                         lock=environment.get('FREEVIDEO_LOCK_PATH') or root / 'engine.lock', busy=busy,
+                         delay=OWED_DELAY if compile_owed(root) else START_DELAY)
+
+
+class FreeVideoExtension(ComfyExtension):
+    async def get_node_list(self):
+        from .comfy_environment import control_process
+        if control_process():
+            from server import PromptServer
+            from .comfy_pool import register_pool
+            await register_pool(PromptServer.instance, root=comfy_bridge.installation_root(),
+                                source=comfy_bridge.source_root())
+        from .comfy_residency import install
+        import comfy.model_management
+        install(comfy.model_management)
+        try:
+            start_background_compile()
+        except Exception as error:
+            # Optional: the first request compiles what it needs, as before.
+            logging.warning('[FreeVideo] Background compile not started: %s', error)
+        return [FreeVideoGenerate, FreeVideoMedia, FreeVideoReference, FreeVideoLoRA, FreeVideoLoRAStack, FreeVideoFrames]

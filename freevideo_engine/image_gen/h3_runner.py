@@ -1,0 +1,161 @@
+"""The H3 Image runner the image worker uses for a request that names `minimax-h3-image`.
+
+It has the same surface as ``ImageRunner`` (``generate``, ``stats``, ``at_boundary``, ``close``) so the worker's
+request loop, cancellation and error classes are shared. The sampling itself is ``h3_pipeline.generate``
+(prompt -> text encoding with the video text encoder -> DiT -> tiled VAE -> picture).
+"""
+import os
+import secrets
+from pathlib import Path
+
+from . import image_pack
+
+TIER_GROUP = 'h3-image:int8'
+STUB_ENV = 'FREEVIDEO_H3_STUB'
+
+
+def files(model_root):
+    """Where the installed H3 Image files are: {'dit', 'vae', 'text_encoder', 'folder'}."""
+    found = {}
+    for row in image_pack.rows(group=TIER_GROUP):
+        if row.get('component') in ('dit', 'vae', 'text_encoder'):
+            found[row['component']] = image_pack.target(row, model_root)
+    found['folder'] = image_pack.base(model_root) / 'h3-image'
+    return found
+
+
+def _previewer(send):
+    """The sampler's per-step preview callback for `send`, or None when previews are off or unavailable."""
+    if send is None:
+        return None
+    from . import step_preview
+    previewer = step_preview.Previewer(send)
+    return previewer if previewer.active else None
+
+
+def _stub(prompt, *, width, height, seed, progress, cancel, preview=None):
+    """A flat picture of the asked size with the stage callbacks, for protocol tests and page checks only."""
+    from PIL import Image
+    shade = (seed or 0) % 160 + 40
+    for index in range(6):
+        if cancel is not None and cancel():
+            raise InterruptedError('cancelled')
+        progress('denoise', (index + 1) / 6)
+        if preview is not None:
+            import io
+            scale = min(1., 512 / max(width, height))
+            small = (max(1, round(width * scale)), max(1, round(height * scale)))
+            buffer = io.BytesIO()
+            Image.new('RGB', small, (shade * (index + 1) // 6, 90, 255 - shade)).save(buffer, 'JPEG', quality=80)
+            preview(step=index + 1, total=6, width=small[0], height=small[1], jpeg=buffer.getvalue())
+    return Image.new('RGB', (width, height), (shade, 90, 255 - shade))
+
+
+class H3Runner:
+    # Its long wait is new, so it is given only where a reserve stays free on the card.
+    long_wait_needs_room = True
+
+    @property
+    def host_least_bytes(self):
+        """Host memory below which the kept DiT would be dropped at the next picture anyway."""
+        from .h3_pipeline import host_floor
+        return host_floor()
+
+    @property
+    def full_card(self):
+        """True while the kept DiT has every block on the card and the decoder is kept too, so the next picture
+        needs no loading; the worker may then wait long for it and gives the card back when it is wanted."""
+        items = (self.kept.items if self.kept is not None else None) or {}
+        dit, vae = items.get('dit'), items.get('vae')
+        if dit is None or vae is None or dit[2] is None:
+            return False
+        try:
+            return dit[2].resident >= len(dit[2].layers)
+        except (AttributeError, TypeError):
+            return False
+
+    def __init__(self, pack_dir, *, device='cuda', progress=None):
+        self.pack_dir = Path(pack_dir)
+        self.model_root = self.pack_dir.parent
+        self.device = device
+        self.files = files(self.model_root)
+        self.last_plan = None
+        self.last_stats = None
+        self.kept = None
+        if progress is not None:
+            progress('load', 1.)
+
+    def generate(self, prompt, *, width, height, seed=None, reference_images=None, progress=None, cancel=None,
+                 setup=None, preview=None, stage=None, note=None, **_):
+        """`setup` is what the service read from the installation: the shared encoder's runtime and the card budget.
+
+        `preview(step=, total=, width=, height=, jpeg=)` receives a small picture after each sampling step."""
+        progress = progress or (lambda stage, fraction: None)
+        # A request without a seed draws a fresh one, as the other image model does; the one used is reported
+        # with the plan so the picture can carry it.
+        seed = secrets.randbits(32) if seed is None else seed
+        self.last_plan = dict(seed=seed)
+        from ..frame_preview import disabled
+        if disabled():
+            preview = None
+        if os.environ.get(STUB_ENV) == '1':
+            return _stub(prompt, width=width, height=height, seed=seed, progress=progress, cancel=cancel, preview=preview)
+        try:
+            from . import h3_pipeline
+        except ImportError:
+            raise RuntimeError('H3 Image generation is not available in this build') from None
+        setup = setup or {}
+        # The engine reports (stage, done, total) with stage encode/denoise/decode; the page's stages are text/denoise/decode.
+        names = dict(encode='text')
+
+        def report(stage, done, total):
+            progress(names.get(stage, stage), done / total if total else 0.)
+
+        stats = {}
+        self.last_stats = dict(h3=stats)
+        if self.kept is None:
+            self.kept = h3_pipeline.KeptModels()
+        try:
+            return h3_pipeline.generate(
+                prompt, width, height, seed, reference_images or None, report,
+                (lambda: bool(cancel and cancel())), dit_path=self.files['dit'], vae_path=self.files['vae'],
+                encoder=setup.get('encoder'), comfy_root=setup.get('comfy_root'), comfy_python=setup.get('comfy_python'),
+                model_paths=setup.get('model_paths'), vram_gib=setup.get('vram_gib'), ram_gib=setup.get('ram_gib'),
+                stats=stats, preview=_previewer(preview), enter=stage, note=note,
+                resident_endpoint=setup.get('resident_endpoint'), kept=self.kept)
+        except h3_pipeline.Cancelled:
+            raise InterruptedError('cancelled') from None
+        finally:
+            self.last_plan = dict(seed=seed, **{key: stats[key] for key in ('canvas', 'resident', 'planned_peak_gib', 'host_mode') if key in stats})
+
+    def idle(self, should_stop):
+        """Prepare the next request after a picture: refill the card with the blocks the plan keeps, then the
+        read-ahead (``h3_pipeline.warm``, when present). Stops at once when ``should_stop()`` is true."""
+        if self.kept is None or should_stop():
+            return
+        warm = getattr(__import__(__package__ + '.h3_pipeline', fromlist=['x']), 'warm', None)
+        if warm is not None:
+            warm(self.files['dit'], kept=self.kept, should_stop=should_stop)
+
+    def prepare(self, setup, should_stop):
+        """Load the picture model as a picture leaves it, before the prompt is known (``h3_pipeline.prepare``).
+        ``setup`` names the resident encoder's worker only."""
+        if should_stop() or os.environ.get(STUB_ENV) == '1':
+            return 'skipped'
+        from . import h3_pipeline
+        if self.kept is None:
+            self.kept = h3_pipeline.KeptModels()
+        return h3_pipeline.prepare(self.files['dit'], self.files['vae'], kept=self.kept,
+                                   resident_endpoint=(setup or {}).get('resident_endpoint'), should_stop=should_stop)
+
+    def at_boundary(self):
+        return True
+
+    def stats(self):
+        return dict(plan=self.last_plan, **(self.last_stats or {}))
+
+    def close(self):
+        if self.kept is not None:
+            self.kept.close()
+            self.kept = None
+        self.last_plan = self.last_stats = None

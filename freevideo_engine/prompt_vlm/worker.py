@@ -1,0 +1,964 @@
+"""One rewrite or ask job per process: model, CUDA context and private commit die together."""
+import json
+import math
+import os
+from pathlib import Path
+import re
+import sys
+import time
+import traceback
+
+PRESTART_ENV = 'FREEVIDEO_PROMPT_PRESTART_WORKER'
+PRESTART_TIMEOUT_ENV = 'FREEVIDEO_PROMPT_PRESTART_TIMEOUT_SECONDS'
+
+
+def process_memory(pid=None):
+    """Import footprint only; Windows residency and commit are distinct."""
+    import psutil
+    pid = os.getpid() if pid is None else pid
+    if os.name == 'nt':
+        from ..win32 import process_memory as counters
+        row = counters(pid)
+        return dict(rss_bytes=row['rss_bytes'], private_bytes=row['private_commit_bytes'],
+                    private_working_set_bytes=row['private_working_set_bytes'],
+                    private_commit_bytes=row['private_commit_bytes'], metric='windows_private')
+    process = psutil.Process(pid)
+    rss = process.memory_info().rss
+    try:
+        private = process.memory_full_info().uss
+        metric = 'uss'
+    except (psutil.Error, OSError, AttributeError):
+        private, metric = rss, 'rss_fallback'
+    return dict(rss_bytes=rss, private_bytes=private, metric=metric)
+
+
+def request_memory(stats):
+    """Credit this waiting worker, rather than its stale launch-time headroom."""
+    import psutil
+    own = process_memory()
+    physical = psutil.virtual_memory().available
+    stats.update(request_memory_metric=own['metric'], request_memory_physical_available_bytes=physical,
+                 request_memory_rss_bytes=own['rss_bytes'], request_memory_private_bytes=own['private_bytes'])
+    if os.name == 'nt':
+        from ..win32 import memory_status
+        commit = memory_status()['commit_available_bytes']
+        physical_credit = physical + own['private_working_set_bytes']
+        commit_credit = commit + own['private_commit_bytes']
+        stats.update(request_memory_commit_available_bytes=commit,
+                     request_memory_private_working_set_bytes=own['private_working_set_bytes'],
+                     request_memory_private_commit_bytes=own['private_commit_bytes'],
+                     request_memory_physical_with_worker_bytes=physical_credit,
+                     request_memory_commit_with_worker_bytes=commit_credit)
+        available = min(physical_credit, commit_credit)
+    else:
+        available = physical + own['private_bytes']
+    stats['request_memory_with_worker_bytes'] = available
+    return available
+
+
+def import_dependencies():
+    # Resolve lazy Transformers classes here, without loading config or weights.
+    os.environ.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_HUB_DISABLE_TELEMETRY='1')
+    import torch
+    import transformers
+    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+    return torch, transformers
+
+
+def wait_request(timeout):
+    """A pipe read in a daemon thread works on Windows as well as POSIX.
+
+    On timeout the process exits, dropping the blocked reader and its pipe.
+    EOF with no request is an ordinary idle exit.
+    """
+    import queue
+    import threading
+    received = queue.Queue()
+    def read():
+        try:
+            chunks, remaining = [], 1024 * 1024
+            while remaining:
+                chunk = os.read(sys.stdin.fileno(), min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            received.put(b''.join(chunks))
+        except Exception as error:
+            received.put(error)
+    threading.Thread(target=read, daemon=True).start()
+    try:
+        value = received.get(timeout=timeout)
+    except queue.Empty:
+        return None
+    if isinstance(value, Exception):
+        raise value
+    return value or None
+
+
+def available_memory():
+    import psutil
+    available = psutil.virtual_memory().available
+    if os.name == 'nt':
+        from ..win32 import memory_status
+        available = min(available, memory_status()['commit_available_bytes'])
+    return available
+
+
+class Cancelled(BaseException):
+    """Raised by a stop signal between Python operations, never inside a GPU call."""
+
+
+def stop_on_signal():
+    """Stop like a finished run: no hard exit while weights or tokens are on their way to the GPU."""
+    import signal
+    names = [signal.SIGTERM, signal.SIGINT] + ([signal.SIGBREAK] if os.name == 'nt' else [])
+    def stop(*_):
+        for name in names:
+            signal.signal(name, signal.SIG_IGN)
+        raise Cancelled()
+    for name in names:
+        signal.signal(name, stop)
+
+
+def settle():
+    torch = sys.modules.get('torch')
+    if torch is not None and torch.cuda.is_initialized():
+        try:
+            torch.cuda.synchronize()
+        except (RuntimeError, OSError):
+            pass
+
+
+def emit(**value):
+    print(json.dumps(value, ensure_ascii=True), flush=True)
+
+
+def gpu_snapshot(stats):
+    torch = sys.modules.get('torch')
+    if torch is not None and torch.cuda.is_initialized():
+        try:
+            free, total = torch.cuda.mem_get_info()
+            stats.update(gpu_peak_allocated_bytes=torch.cuda.max_memory_allocated(),
+                         gpu_peak_reserved_bytes=torch.cuda.max_memory_reserved(),
+                         gpu_free_bytes=free, gpu_total_bytes=total,
+                         gpu_allocator_ooms=torch.cuda.memory_stats().get('num_ooms'))
+        except (RuntimeError, OSError):
+            stats['gpu_sample_unavailable'] = True
+
+
+def failure(error, mode='rewrite'):
+    """Keep stack locations and typed causes, never arbitrary exception text.
+
+    Tokenizers may quote only a fragment of either draft: replacing the full
+    prompt in an exception is not sufficient to make that exception private.
+    """
+    allowed = {'ram_space', 'image_size', 'context_length', 'invalid_output', 'out_of_memory'}
+    message = str(error)
+    fallback = 'ask_failed' if mode == 'ask' else 'rewrite_failed'
+    code = message if message in allowed else 'out_of_memory' if 'out of memory' in message.lower() else fallback
+    frames = [dict(module=Path(f.filename).name, function=f.name, line=f.lineno)
+              for f in traceback.extract_tb(error.__traceback__)]
+    result = dict(error=code, exception=type(error).__name__, error_details=frames)
+    from .rules import InvalidOutput
+    if isinstance(error, InvalidOutput):
+        result['output_rejection'] = error.details
+    return result
+
+
+def begin(stats):
+    """Imports and the available-RAM readings shared by every mode; returns checkpoint()."""
+    started = time.monotonic()
+    if 'available_memory_at_start_bytes' not in stats:
+        stats['available_memory_at_start_bytes'] = available_memory()
+    import hashlib
+    stats['code_sha256'] = {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+                            for name in ('core.py', 'worker.py', 'rules.py')}
+    emit(phase='loading', diagnostics=dict(stats))
+    torch, transformers = import_dependencies()
+    if 'prewarm_import_seconds' not in stats:
+        stats['import_seconds'] = time.monotonic() - started
+    stats.update(torch_version=torch.__version__,
+                 transformers_version=transformers.__version__, cuda_version=torch.version.cuda,
+                 platform=sys.platform, python_version=sys.version.split()[0])
+    def checkpoint(stage, phase='loading', **extra):
+        stats['stage'] = stage
+        stats['worker_seconds'] = time.monotonic() - started
+        gpu_snapshot(stats)
+        emit(phase=phase, diagnostics=dict(stats), **extra)
+    stats['available_memory_before_load_bytes'] = available_memory()
+    torch.set_num_threads(min(8, os.cpu_count() or 1))
+    return torch, checkpoint
+
+
+def open_image(path, ratio=False):
+    """The picture as the model sees it; with ratio, also its shape as W:H in lowest terms after EXIF
+    orientation and before the reduction."""
+    from PIL import Image, ImageOps
+    with Image.open(path) as source:
+        if source.width * source.height > 50_000_000:
+            raise ValueError('image_size')
+        image = ImageOps.exif_transpose(source).convert('RGB')
+        shape = '%d:%d' % (image.width // math.gcd(*image.size), image.height // math.gcd(*image.size))
+        image.thumbnail((768, 768))
+    return (image, shape) if ratio else image
+
+
+def tokenize(processor, messages, max_pixels=512 * 32 * 32):
+    return processor.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
+        return_dict=True, return_tensors='pt', processor_kwargs={'images_kwargs': {'max_pixels': max_pixels}})
+
+
+# Available RAM each placement needs. A GPU-resident load reads one layer at a
+# time into a small buffer; its figure covers the whole worker and is checked
+# against the reading taken when the worker starts (on Windows the imports and
+# CUDA context alone take about 2.5 GB of commit). Other placements map and
+# merge the whole model in RAM; theirs is checked after the imports.
+RESIDENT_RAM = 4 * 2**30
+STREAMED_RAM = 6 * 2**30   # download-card figure for 6 GB cards: resident part plus the streamed layers' host copy
+MAPPED_RAM = 11 * 2**30
+
+
+# GPU space beside the weights and the KV cache: prefill activations, a
+# widened int8 weight, the per-layer merge while loading and allocator slack.
+WORKING_VRAM = 3 * 2**28
+OUTPUT_TOKENS = 1800
+# GPU memory a worker holds outside the allocator's pool (CUDA context, kernel modules, library
+# handles): 660-700 MiB in every measured run, whatever the request. A card whose free memory
+# the plan filled to the last byte had nothing left for it and failed after the allocator
+# reported no out-of-memory.
+NON_ALLOCATOR_VRAM = 3 * 2**28
+
+
+def kv_positions(input_tokens, answer_tokens=None):
+    """Cache positions reserved for a request: the input and its rewrite, then a
+    correction retry that resends both with a short instruction and writes another.
+    A retry that would need more is skipped when the model is held on the GPU.
+    With answer_tokens, only one answer of that length is reserved (no retry)."""
+    if answer_tokens is not None:
+        return input_tokens + answer_tokens + 256
+    return input_tokens + 2 * OUTPUT_TOKENS + 256
+
+
+def reserved_tokens(stats):
+    """Prompt length to reserve KV space for; a batch of questions runs one at a time."""
+    tokens = stats.get('input_tokens', 6500)
+    if isinstance(tokens, list):
+        tokens = max((t for t in tokens if t <= 6500), default=6500)
+    return tokens
+
+
+def kv_bytes(stored, input_tokens, answer_tokens=None):
+    keys = [row for name, row in stored.items() if name.endswith('self_attn.k_proj.weight')]
+    per_token = 2 * len(keys) * (keys[0]['shape'][0] if keys else 0) * 2  # K and V, bf16
+    return per_token * kv_positions(input_tokens, answer_tokens)
+
+
+def retry_allowed(tokens, stats):
+    """A correction retry must fit the context limit and, on the GPU, the reserved cache."""
+    if tokens + OUTPUT_TOKENS > stats.get('kv_positions', tokens + OUTPUT_TOKENS):
+        stats['dialogue_retry_skipped'] = 'gpu_space'
+        return False
+    return tokens <= 6500
+
+
+def placement(weights, int8_saving, kv, allocator_budget):
+    """'bf16' or 'int8' when weights, KV and working space fit the GPU, else None
+    (map in RAM and run the layers that do not fit from there).
+
+    Cards that cannot hold bf16 weights (8-10 GB) would otherwise run part of
+    every token from system RAM, about 1 token/s on Windows.
+    """
+    room = allocator_budget - kv - WORKING_VRAM
+    return 'bf16' if weights <= room else 'int8' if weights - int8_saving <= room else None
+
+
+def gpu_plan(weights, stored, free, input_tokens, answer_tokens, text_only, extra=0, vision_gpu_only=False):
+    """The GPU placement for `free` allocator bytes, or None when none fits.
+
+    Best first: bf16 or int8 resident, then int8 with the later layers streamed
+    from host memory. A text-only request does not load the vision tower, so it
+    is planned without it, and when nothing else fits it reserves the cache for
+    one answer (no correction retry). A request with images runs the vision
+    tower on the CPU only when nothing fits otherwise, and keeps the retry: a
+    rewrite that misses a picture reference fails without it."""
+    from . import int8
+    vision = sum(row['bytes'] for name, row in stored.items() if name.startswith('model.visual.'))
+    saving = int8.saved_bytes(stored)
+    def fit(answer, on_host):
+        kv = kv_bytes(stored, input_tokens, answer) + extra
+        size = weights - vision if on_host else weights
+        plan = dict(kv=kv, positions=kv_positions(input_tokens, answer), vision_on_host=on_host,
+                    vision_bytes=vision if on_host else 0, keep=None, host_bytes=0)
+        precision = placement(size, saving, kv, free)
+        if precision:
+            return dict(plan, precision=precision)
+        streamed = int8.resident_layers(size, stored, free - kv - WORKING_VRAM)
+        if streamed:
+            return dict(plan, precision='int8', keep=streamed[0], host_bytes=streamed[1])
+        return None
+    if kv_positions(input_tokens, answer_tokens) >= kv_positions(input_tokens):
+        answer_tokens = None
+    if text_only:
+        # The tower is never read: it takes neither GPU nor host memory.
+        options = ((None, True), (answer_tokens, True))
+    elif vision_gpu_only:
+        # Many frames through the tower on the CPU would take minutes: lower the frames instead (reverse prompt).
+        options = ((None, False),)
+    else:
+        options = ((None, False), (None, True))
+    for answer, on_host in dict.fromkeys(options):
+        plan = fit(answer, on_host)
+        if plan:
+            return plan
+    return None
+
+
+def gpu_needed(weights, stored, free, input_tokens, answer_tokens, text_only, extra=0, vision_gpu_only=False):
+    """The fewest allocator bytes, to 32 MiB, for which gpu_plan finds a placement."""
+    step = 32 * 2**20
+    low, high = free // step, -(-(weights + 2 * kv_bytes(stored, input_tokens) + extra + WORKING_VRAM) // step)
+    while low + 1 < high:
+        middle = (low + high) // 2
+        if gpu_plan(weights, stored, middle * step, input_tokens, answer_tokens, text_only, extra, vision_gpu_only):
+            high = middle
+        else:
+            low = middle
+    return high * step
+
+
+def load_model(folder, torch, stats, checkpoint):
+    """Weights, FreeToken operators and GPU placement; returns (model, device)."""
+    from . import core, int8
+    from .load import stored
+    checkpoint('placement')
+    placing = time.monotonic()
+    shapes = stored(folder)
+    weights = sum(row['bytes'] for row in shapes.values())
+    resident = None
+    keep = None
+    host_bytes = 0
+    weight_budget = 0
+    vision_bytes = 0
+    skip_vision = False
+    if torch.cuda.is_available():
+        from .. import gpu_budget
+        free, total = torch.cuda.mem_get_info()
+        stats.update(gpu_name=torch.cuda.get_device_name(), gpu_free_before_load_bytes=free, gpu_total_bytes=total,
+                     gpu_compute_capability=list(torch.cuda.get_device_capability()))
+        reading = free
+        admission = gpu_budget.configure(torch, free, reserve_bytes=256 * 2**20)
+        free = min(free, admission.get('effective_allocator_limit_bytes') or free)
+        tokens = reserved_tokens(stats)
+        answer = stats.get('answer_tokens', OUTPUT_TOKENS)
+        video = (stats.get('video_vram_bytes', 0), bool(stats.get('video_frames')))
+        def place(budget):
+            return gpu_plan(weights, shapes, budget, tokens, answer, not stats.get('image_count'), *video)
+        # Plan against what is left after the CUDA context and kernels, which the allocator's
+        # limit does not cover; the Windows limit already leaves the 256 MiB growth reserve.
+        extra = min(max(0, int(stats.get('extra_vram_reserve_bytes') or 0)), 4 * 2**30)
+        margin = NON_ALLOCATOR_VRAM - (256 * 2**20 if admission.get('enforced') else 0) + extra
+        plan = place(free)
+        spare = place(free - margin) if free > margin else None
+        # Only a placement that keeps every layer on the GPU is planned with the margin, and only while
+        # the margin does not push the layers out to host memory (about 1 token/s); cards that already
+        # stream layers keep their plan. After a run that ran out of memory the margin is kept regardless.
+        if spare and (extra or plan and plan['keep'] is None and spare['keep'] is None):
+            plan, free_plan = spare, free - margin
+            stats['gpu_non_allocator_reserve_bytes'] = margin + (256 * 2**20 if admission.get('enforced') else 0)
+            if admission.get('enforced') and margin > 0:
+                gpu_budget.configure(torch, reading, reserve_bytes=NON_ALLOCATOR_VRAM + extra)
+        else:
+            free_plan = free
+            stats['gpu_non_allocator_reserve_bytes'] = 0
+        free = free_plan
+        # When the layers do not all fit, keep activation/KV space and the
+        # desktop outside the budget for the layers that stay on the GPU.
+        weight_budget = min(9 * 2**30, max(0, free - 2 * 2**30))
+        positions = plan['positions'] if plan else kv_positions(tokens)
+        stats.update(gpu_allocator_budget_bytes=free, gpu_weight_budget_bytes=weight_budget,
+                     gpu_kv_reserve_bytes=plan['kv'] if plan else kv_bytes(shapes, tokens))
+        if plan:
+            resident, keep, host_bytes = plan['precision'], plan['keep'], plan['host_bytes']
+            # A request without pictures never runs the tower, so it is not read at all: no GPU
+            # memory and no host copy. One with pictures that does not fit keeps it in host memory.
+            skip_vision = plan['vision_on_host'] and not stats.get('image_count')
+            vision_bytes = 0 if skip_vision else plan['vision_bytes']
+            stats.update(vision_device='unloaded' if skip_vision else 'cpu' if plan['vision_on_host'] else 'gpu',
+                         kv_reserve='one_answer' if positions < kv_positions(tokens) else 'with_retry')
+        stats.update(streamed_layers=len(int8.layer_bytes(shapes)) - keep if keep is not None else 0,
+                     streamed_host_bytes=host_bytes)
+        if not resident and weight_budget <= 2 * 2**30:
+            # Not even the streaming tier fits: the model would run on the CPU at
+            # about 0.2 tokens/s and hit the request deadline, so say so at once.
+            # The service waits for this much to become free before trying again.
+            answer = stats.get('answer_tokens', OUTPUT_TOKENS)
+            stats['gpu_free_needed_bytes'] = gpu_needed(weights, shapes, free, tokens, answer, not stats.get('image_count'), *video)
+            # The report names the figure for a text-only request and for one with images; this
+            # request's own kind may fit at the free memory shown, so these start from zero.
+            stats.update(placement_refused='gpu_free_below_floor',
+                         gpu_free_needed_text_only_bytes=gpu_needed(weights, shapes, 0, tokens, answer, True),
+                         gpu_free_needed_with_images_bytes=gpu_needed(weights, shapes, 0, tokens, answer, False, *video))
+            raise ValueError('out_of_memory')
+    stats['ram_required_bytes'] = (RESIDENT_RAM + host_bytes + vision_bytes) if resident else MAPPED_RAM
+    available = stats['available_memory_at_start_bytes' if resident else 'available_memory_before_load_bytes']
+    if available < stats['ram_required_bytes']:
+        raise ValueError('ram_space')
+    from ..device_index import active_index
+    card = active_index(torch)
+    checkpoint('load_weights')
+    loading = time.monotonic()
+    if resident:
+        from .load import resident as load_resident
+        model = load_resident(folder, torch, 'cuda:%d' % card, resident, keep, vision_on_host=bool(vision_bytes),
+                               skip_vision=skip_vision)
+        mapping, device = {'': card}, 'cuda:%d' % card
+        stats.update(weights=resident, kv_positions=positions)
+    else:
+        import psutil
+        from transformers import Qwen3VLForConditionalGeneration
+        model = Qwen3VLForConditionalGeneration.from_pretrained(folder, dtype=torch.bfloat16,
+            device_map='cpu', local_files_only=True, trust_remote_code=False, attn_implementation='sdpa').eval()
+        core.prepare(model)
+        mapping, device = {'': 'cpu'}, 'cpu'
+        if weight_budget > 2 * 2**30:
+            from accelerate import dispatch_model, infer_auto_device_map
+            mapping = infer_auto_device_map(model, max_memory={card: weight_budget,
+                'cpu': min(psutil.virtual_memory().total - 2 * 2**30, weights + available_memory() - 2 * 2**30)},
+                no_split_module_classes=['Qwen3VLTextDecoderLayer', 'Qwen3VLVisionBlock'], dtype=torch.bfloat16)
+            if 'disk' in mapping.values():
+                raise ValueError('ram_space')
+            model = dispatch_model(model, mapping)
+            device = 'cuda:%d' % card if any(v == card for v in mapping.values()) else 'cpu'
+    if torch.cuda.is_available():
+        # Windows builds have no flash attention: keep the prefill off the math kernel (see core.expand_kv_heads).
+        expanded = core.expand_kv_heads(torch, 'cuda:%d' % card)
+        if expanded:
+            core.use_expanded_kv_heads()
+        stats['attention_kv_heads'] = 'expanded' if expanded else 'grouped'
+    stats.update(load_seconds=time.monotonic() - loading, placement_seconds=time.monotonic() - placing,
+                 accelerations=['merged_gate_up', 'per_image_sdpa', 'chunked_vision_mlp', 'merged_qkv'],
+                 backend='freetoken-portable-ops+transformers',
+                 cpu_offload=any(v == 'cpu' for v in mapping.values()) and any(v == card for v in mapping.values()),
+                 execution_device=device, device_map=mapping)
+    return model, device
+
+
+def generate(torch, model, inputs, max_new_tokens, started, on_token, stop=None):
+    """Greedy decoding; on_token(timing) sees first-output and decode speed, and stop(ids) may end it early."""
+    from transformers import StoppingCriteria, StoppingCriteriaList
+    prompt = inputs.input_ids.shape[-1]
+    timing = {}
+    class Progress(StoppingCriteria):
+        first = None
+        def __call__(self, input_ids, scores, **kwargs):
+            now = time.monotonic()
+            tokens = int(input_ids.shape[-1] - prompt)
+            if self.first is None:
+                if inputs.input_ids.is_cuda:
+                    torch.cuda.synchronize()
+                    now = time.monotonic()
+                self.first = now
+                timing['first_output_seconds'] = now - started
+                timing['first_output_epoch'] = time.time()
+            timing.update(output_tokens=tokens, decode_seconds=now - self.first,
+                          decode_tokens_per_second=(tokens - 1) / (now - self.first) if now > self.first else None)
+            on_token(timing)
+            return bool(stop is not None and tokens % 16 == 0 and stop(input_ids[0, prompt:]))
+    with torch.inference_mode():
+        output = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False, use_cache=True,
+                                stopping_criteria=StoppingCriteriaList([Progress()]))
+    return output[0, prompt:], timing
+
+
+def run(folder, value, *, stats=None):
+    stats = {} if stats is None else stats
+    if value.get('mode') == 'ask':
+        return ask(folder, value, stats)
+    if value.get('mode') == 'split':
+        return split(folder, value, stats)
+    if value.get('mode') == 'image':
+        return image(folder, value, stats)
+    if value.get('mode') == 'reverse':
+        return reverse(folder, value, stats)
+    return rewrite(folder, value, stats)
+
+
+def image(folder, value, stats):
+    """One rewritten picture prompt, with the reference pictures in view; text leaves only via stdout."""
+    from .rules import (IMAGE_INPUT_TOKENS, IMAGE_OUTPUT_TOKENS, image_caption, image_instruction, image_picture_text,
+                        image_style, image_tokens, image_user_text)
+    limit = IMAGE_OUTPUT_TOKENS
+    stats.update(stage='imports', pid=os.getpid(), image_count=len(value['media']), mode='image', answer_tokens=limit,
+                 image_style=image_style(value), dtype='bfloat16', attention='sdpa', kv_cache='dynamic',
+                 backend='transformers', accelerations=[], persistent_model=False)
+    torch, checkpoint = begin(stats)
+    from transformers import AutoProcessor
+    checkpoint('preprocess')
+    preparing = time.monotonic()
+    processor = AutoProcessor.from_pretrained(folder, local_files_only=True, trust_remote_code=False)
+    content = []
+    for row in value['media']:
+        picture, ratio = open_image(row['path'], ratio=True)
+        content.extend([{'type': 'text', 'text': image_picture_text(value, row, ratio)},
+                        {'type': 'image', 'image': picture}])
+    content.append({'type': 'text', 'text': image_user_text(value)})
+    messages = [{'role': 'system', 'content': image_instruction(value)}, {'role': 'user', 'content': content}]
+    inputs = tokenize(processor, messages, image_tokens(len(value['media'])) * 32 * 32)
+    if inputs.input_ids.shape[-1] > IMAGE_INPUT_TOKENS:
+        raise ValueError('context_length')
+    stats.update(input_tokens=int(inputs.input_ids.shape[-1]), preprocess_seconds=time.monotonic() - preparing)
+    model, device = load_model(folder, torch, stats, checkpoint)
+    loaded = time.monotonic()
+    checkpoint('prefill', 'rewriting')
+    shown = [0.]
+    def on_token(timing):
+        stats.update(output_tokens=timing['output_tokens'], decode_seconds=timing['decode_seconds'],
+                     decode_tokens_per_second=timing['decode_tokens_per_second'])
+        stats['time_to_first_output_seconds'] = timing['first_output_seconds']
+        stats.setdefault('first_output_epoch', timing['first_output_epoch'])
+        if time.monotonic() - shown[0] > .5:
+            checkpoint('decode', 'rewriting')
+            shown[0] = time.monotonic()
+    ids, _ = generate(torch, model, inputs.to(device), limit, loaded, on_token)
+    stats.update(rewrite_seconds=time.monotonic() - loaded, output_tokens=len(ids))
+    checkpoint('validate', 'rewriting')
+    if len(ids) >= limit:
+        raise ValueError('context_length')
+    try:
+        caption = image_caption(processor.decode(ids, skip_special_tokens=True), value)
+    except ValueError as error:
+        if hasattr(error, 'details'):
+            stats.setdefault('output_rejections', []).append(error.details)
+        raise
+    stats['stage'] = 'complete'
+    emit(phase='complete', text=caption, diagnostics=dict(stats))
+
+
+# Peak graphics memory grew by about 0.04 GiB per 640 px frame (Qwen3-VL-4B, 8 to 32 frames, measured 11-19).
+VIDEO_FRAME_VRAM = 48 * 2**20
+VIDEO_SIDES = (640, 480, 384)
+
+
+def video_inputs(processor, frames, side, question):
+    """Frames shown with their times: Qwen3-VL turns each pair of frames into one group and prefixes its time."""
+    import numpy as np
+    from PIL import Image
+    from transformers.video_utils import VideoMetadata
+    pictures = []
+    for row in frames:
+        with Image.open(row['path']) as source:
+            picture = source.convert('RGB')
+        picture.thumbnail((side, side))
+        pictures.append(np.asarray(picture))
+    clip = np.stack(pictures)
+    times = [row['seconds'] for row in frames]
+    scale = 100  # indices at 100 per second reproduce the sampled times
+    metadata = VideoMetadata(total_num_frames=int(times[-1] * scale) + 1, fps=float(scale), duration=float(times[-1]),
+                             frames_indices=[round(t * scale) for t in times], width=clip.shape[2], height=clip.shape[1])
+    messages = [{'role': 'user', 'content': [{'type': 'video'}, {'type': 'text', 'text': question}]}]
+    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    return processor(text=[text], videos=[clip], video_metadata=[metadata], do_sample_frames=False, return_tensors='pt')
+
+
+def pick_frames(frames, build, budget):
+    """(frames, side, inputs) for the largest request that fits the token budget: fewer frames first (down to 8, always
+    spread over the whole clip), then smaller ones. None when even the smallest does not fit."""
+    for side in VIDEO_SIDES:
+        count = len(frames)
+        while True:
+            picked = [frames[round(i * (len(frames) - 1) / max(1, count - 1))] for i in range(count)]
+            inputs = build(picked, side)
+            if inputs.input_ids.shape[-1] <= budget:
+                return picked, side, inputs
+            if count <= 8:
+                break
+            count = max(8, count - 4)
+    return None
+
+
+def reverse(folder, value, stats):
+    """Describe a video from its frames, ask where the camera moves, and give both back with the caller's spoken lines."""
+    from .rules import (REVERSE_CAMERA, REVERSE_CAMERA_TOKENS, REVERSE_DESCRIBE, REVERSE_INPUT_TOKENS,
+                        REVERSE_OUTPUT_TOKENS, reverse_text)
+    stats.update(stage='imports', pid=os.getpid(), mode='reverse', frame_files=len(value['frame_files']),
+                 answer_tokens=REVERSE_OUTPUT_TOKENS, dtype='bfloat16', attention='sdpa', kv_cache='dynamic',
+                 backend='transformers', accelerations=[], persistent_model=False)
+    torch, checkpoint = begin(stats)
+    from transformers import AutoProcessor
+    checkpoint('preprocess')
+    preparing = time.monotonic()
+    processor = AutoProcessor.from_pretrained(folder, local_files_only=True, trust_remote_code=False)
+    # Frames and size are chosen before the model is placed, from the request's token budget: first fewer frames
+    # (down to 8), then smaller ones. The tower stays on the GPU for a video.
+    chosen = pick_frames(value['frame_files'], lambda rows, side: video_inputs(processor, rows, side, REVERSE_DESCRIBE),
+                         REVERSE_INPUT_TOKENS)
+    if chosen is None:
+        raise ValueError('context_length')
+    picked, side, inputs = chosen
+    stats.update(input_tokens=int(inputs.input_ids.shape[-1]), video_frames=len(picked), video_side=side,
+                 video_vram_bytes=len(picked) * VIDEO_FRAME_VRAM, image_count=len(picked),
+                 preprocess_seconds=time.monotonic() - preparing)
+    model, device = load_model(folder, torch, stats, checkpoint)
+    loaded = time.monotonic()
+    checkpoint('prefill', 'describing')
+    shown = [0.]
+    def on_token(timing):
+        stats.update(output_tokens=timing['output_tokens'], decode_seconds=timing['decode_seconds'],
+                     decode_tokens_per_second=timing['decode_tokens_per_second'])
+        stats['time_to_first_output_seconds'] = timing['first_output_seconds']
+        stats.setdefault('first_output_epoch', timing['first_output_epoch'])
+        if time.monotonic() - shown[0] > .5:
+            checkpoint('decode', 'describing')
+            shown[0] = time.monotonic()
+    ids, _ = generate(torch, model, inputs.to(device), REVERSE_OUTPUT_TOKENS, loaded, on_token)
+    description = processor.decode(ids, skip_special_tokens=True).strip()
+    stats.update(describe_seconds=time.monotonic() - loaded, output_tokens=len(ids))
+    checkpoint('decode', 'camera')
+    started = time.monotonic()
+    camera_inputs = video_inputs(processor, picked, side, REVERSE_CAMERA)
+    ids, _ = generate(torch, model, camera_inputs.to(device), REVERSE_CAMERA_TOKENS, started, lambda timing: None)
+    camera = processor.decode(ids, skip_special_tokens=True).strip()
+    stats.update(camera_seconds=time.monotonic() - started, stage='complete')
+    emit(phase='complete', text=reverse_text(description, camera, value['lines']), diagnostics=dict(stats))
+
+
+def validate_rewrite(text, value, stats, retried=False):
+    from .rules import InvalidOutput, validate_output
+    try:
+        return validate_output(text, value)
+    except InvalidOutput as error:
+        error.details['retried'] = retried
+        stats.setdefault('output_rejections', []).append(error.details)
+        raise
+
+
+def rewrite(folder, value, stats):
+    stats.update(stage='imports', pid=os.getpid(), image_count=len(value['media']),
+                 mode=value['mode'], dtype='bfloat16', attention='sdpa', kv_cache='dynamic',
+                 backend='transformers', accelerations=[],
+                 persistent_model=False)
+    torch, checkpoint = begin(stats)
+    from transformers import AutoProcessor
+    from .rules import DIALOGUE_RETRY, TIMESTAMP_RETRY, TIMING_RETRY, InvalidOutput, fit_time_points, instruction, label, language, lost_marks, missing_lines, user_text
+    checkpoint('preprocess')
+    preparing = time.monotonic()
+    processor = AutoProcessor.from_pretrained(folder, local_files_only=True, trust_remote_code=False)
+    messages = [{'role': 'system', 'content': instruction(value)}]
+    content = []
+    for row in value['media']:
+        content.extend([{'type': 'text', 'text': f'{label(row)} ({row["role"]})'},
+                        {'type': 'image', 'image': open_image(row['path'])}])
+    content.append({'type': 'text', 'text': user_text(value)})
+    messages.append({'role': 'user', 'content': content})
+    inputs = tokenize(processor, messages)
+    if inputs.input_ids.shape[-1] > 6500:
+        raise ValueError('context_length')
+    stats.update(input_tokens=int(inputs.input_ids.shape[-1]), preprocess_seconds=time.monotonic() - preparing)
+    model, device = load_model(folder, torch, stats, checkpoint)
+    inputs = inputs.to(device)
+    loaded = time.monotonic()
+    checkpoint('prefill', 'rewriting')
+    shown = [0.]
+    def on_token(timing):
+        stats.update(output_tokens=timing['output_tokens'], decode_seconds=timing['decode_seconds'],
+                     decode_tokens_per_second=timing['decode_tokens_per_second'])
+        stats['time_to_first_output_seconds'] = timing['first_output_seconds']
+        stats.setdefault('first_output_epoch', timing['first_output_epoch'])
+        if time.monotonic() - shown[0] > .5:
+            checkpoint('decode', 'rewriting')
+            shown[0] = time.monotonic()
+    ids, _ = generate(torch, model, inputs, 1800, loaded, on_token)
+    stats.update(rewrite_seconds=time.monotonic() - loaded, output_tokens=len(ids))
+    checkpoint('validate', 'rewriting')
+    if len(ids) >= 1800:
+        raise ValueError('context_length')
+    text = processor.decode(ids, skip_special_tokens=True)
+    missing, marks = missing_lines(text, value['text']), lost_marks(text, value['text'])
+    rewritten, rejected = None, None
+    references, late, last = [], False, text
+    try:
+        rewritten = validate_rewrite(text, value, stats)
+    except InvalidOutput as error:
+        rejected = error
+        if error.details['condition'] == 'missing_picture_reference':
+            references = error.details['missing_references']
+        late = error.details['condition'] == 'timestamp_not_before_duration'
+        if late:
+            # Time points are checked first; ask for any media reference the draft also left out.
+            references = error.details['missing_references']
+    if missing or marks or references or late:
+        # Every correction shares one turn and the existing context/cache allowance.
+        correction = ''
+        if references:
+            labels = ', '.join(references)
+            correction = (f'Your rewrite omitted these required media references: {labels}. '
+                          'Preserve all existing content and add each missing reference where it belongs. '
+                          'Return the complete prompt in the same required section format.\n')
+        if late:
+            correction += TIMESTAMP_RETRY % ((value['seconds'],) * 3)
+        if missing:
+            correction += DIALOGUE_RETRY + '\n'.join('- [%s] %s' % (language(line), line) for line in missing) + '\n'
+        if marks:
+            correction += TIMING_RETRY + ', '.join(marks) + '\n'
+        retry = messages + [{'role': 'assistant', 'content': text}, {'role': 'user', 'content': correction}]
+        retry_inputs = tokenize(processor, retry)
+        if retry_allowed(retry_inputs.input_ids.shape[-1], stats):
+            again, _ = generate(torch, model, retry_inputs.to(device), 1800, time.monotonic(), lambda timing: None)
+            second = processor.decode(again, skip_special_tokens=True)
+            # A cut-off correction is never used, not even to scale: fall back to the first draft.
+            last = second if len(again) < 1800 else text
+            stats.update(retry_output_tokens=len(again), rewrite_seconds=time.monotonic() - loaded)
+            if missing or marks:
+                stats['dialogue_retry'] = True
+            if late:
+                stats['timestamp_retry'] = True
+            if references:
+                stats['media_retry'] = True
+                if any(each.startswith('<Picture ') for each in references):
+                    stats['picture_retry'] = True  # Retain the existing image diagnostic.
+            try:
+                candidate = validate_rewrite(second, value, stats, retried=True)
+                if (references or late) and len(again) >= 1800:
+                    error = InvalidOutput('output_token_limit', second, value)
+                    error.details['retried'] = True
+                    stats['output_rejections'].append(error.details)
+                    raise error
+                if len(again) < 1800 and (references or late or len(missing_lines(second, value['text'])) + len(lost_marks(second, value['text'])) < len(missing) + len(marks)):
+                    rewritten = candidate
+            except InvalidOutput:
+                if references and not late:
+                    raise
+        elif late or references:
+            skipped = stats.get('dialogue_retry_skipped', 'context_length')
+            if late:
+                stats['timestamp_retry_skipped'] = skipped
+            if references:
+                stats['media_retry_skipped'] = skipped
+                if any(each.startswith('<Picture ') for each in references):
+                    stats['picture_retry_skipped'] = skipped
+    if rewritten is None and late:
+        # Still late after the correction (or no room for one): scale the time points, change nothing else.
+        for each in dict.fromkeys((last, text)):
+            try:
+                rewritten = validate_rewrite(fit_time_points(each, value['seconds']), value, stats,
+                                             retried=bool(stats.get('timestamp_retry')))
+            except InvalidOutput:
+                continue
+            stats['timestamp_rescaled'] = True
+            break
+    if rewritten is None:
+        rejected.details = dict(rejected.details, retried=bool(stats.get('media_retry') or stats.get('dialogue_retry') or stats.get('timestamp_retry')))
+        raise rejected
+    if lost_marks(rewritten, value['text']):
+        # Fixed times that survive neither pass: the caller falls back to the converted original.
+        raise InvalidOutput('timing_lost', rewritten, value)
+    stats['stage'] = 'complete'
+    emit(phase='complete', text=rewritten, diagnostics=dict(stats))
+
+
+def split(folder, value, stats):
+    """One description per part of a long video; text leaves only via stdout."""
+    from .rules import SPLIT_RETRY, split_instruction, split_user_text, validate_split
+    count = len(value['seconds'])
+    limit = min(2 * OUTPUT_TOKENS - 200, 600 + 300 * count)  # Within the cache reserved for a rewrite and its retry.
+    stats.update(stage='imports', pid=os.getpid(), mode='split', part_count=count, answer_tokens=limit, dtype='bfloat16',
+                 attention='sdpa', kv_cache='dynamic', backend='transformers', accelerations=[],
+                 persistent_model=False)
+    torch, checkpoint = begin(stats)
+    from transformers import AutoProcessor
+    checkpoint('preprocess')
+    preparing = time.monotonic()
+    processor = AutoProcessor.from_pretrained(folder, local_files_only=True, trust_remote_code=False)
+    messages = [{'role': 'system', 'content': split_instruction(value)},
+                {'role': 'user', 'content': [{'type': 'text', 'text': split_user_text(value)}]}]
+    inputs = tokenize(processor, messages)
+    if inputs.input_ids.shape[-1] > 6500:
+        raise ValueError('context_length')
+    stats.update(input_tokens=int(inputs.input_ids.shape[-1]), preprocess_seconds=time.monotonic() - preparing)
+    model, device = load_model(folder, torch, stats, checkpoint)
+    loaded = time.monotonic()
+    checkpoint('prefill', 'splitting')
+    shown = [0.]
+    def on_token(timing):
+        stats.update(output_tokens=timing['output_tokens'], decode_seconds=timing['decode_seconds'])
+        if time.monotonic() - shown[0] > .5:
+            checkpoint('decode', 'splitting')
+            shown[0] = time.monotonic()
+    def ended(ids):
+        # A model that starts the answer over after the last part would repeat it until the limit.
+        text = processor.decode(ids, skip_special_tokens=True)
+        last = re.search(r'(?m)^Part %d:' % count, text)
+        again = last and re.search(r'(?m)^(?:Part \d+:|Shared:)', text[last.end():])
+        return text[:last.end() + again.start()].rstrip() if again else None
+    def answer(ids):
+        text = ended(ids)
+        return [text] if text is not None else [processor.decode(ids, skip_special_tokens=True)] if len(ids) < limit else []
+    ids, _ = generate(torch, model, inputs.to(device), limit, loaded, on_token, ended)
+    answers = answer(ids)
+    stats.update(split_seconds=time.monotonic() - loaded, output_tokens=len(ids))
+    parts = None
+    try:
+        parts = validate_split(answers[0], value, strict=True)
+    except (ValueError, IndexError):
+        # One more try with the rules restated; resending the wrong answer would not fit the cache.
+        retry = [messages[0], {'role': 'user', 'content': [{'type': 'text', 'text': (
+            split_user_text(value) + '\n\n' + SPLIT_RETRY)}]}]
+        retry_inputs = tokenize(processor, retry)
+        if retry_inputs.input_ids.shape[-1] + limit <= stats.get('kv_positions', 10 ** 9):
+            ids, _ = generate(torch, model, retry_inputs.to(device), limit, time.monotonic(), lambda timing: None, ended)
+            stats.update(split_retry=True, retry_output_tokens=len(ids), split_seconds=time.monotonic() - loaded)
+            answers[:0] = answer(ids)
+        for strict in (True, False):
+            for answer in answers:
+                try:
+                    parts = parts or validate_split(answer, value, strict=strict)
+                except ValueError:
+                    pass
+        if parts is None:
+            raise ValueError('split_failed')
+    stats['stage'] = 'complete'
+    emit(phase='complete', parts=parts, diagnostics=dict(stats))
+
+
+def ask(folder, value, stats):
+    """Answer each question with one loaded model; answers leave only via stdout."""
+    from .rules import ask_instruction, image_tokens, parse_json, ASK_JSON_RETRY
+    questions = value['questions']
+    stats.update(stage='imports', pid=os.getpid(), mode='ask', question_count=len(questions),
+                 image_count=sum(len(q['images']) for q in questions), format=value['format'],
+                 max_tokens=value['max_tokens'], answer_tokens=value['max_tokens'], custom_system=bool(value.get('system')),
+                 dtype='bfloat16', attention='sdpa', kv_cache='dynamic', backend='transformers',
+                 accelerations=[], persistent_model=False)
+    torch, checkpoint = begin(stats)
+    from transformers import AutoProcessor
+    checkpoint('preprocess')
+    preparing = time.monotonic()
+    processor = AutoProcessor.from_pretrained(folder, local_files_only=True, trust_remote_code=False)
+    system = ask_instruction(value)
+    images = {}
+    prepared = []
+    for question in questions:
+        content = []
+        for index, row in enumerate(question['images'], 1):
+            if row['path'] not in images:
+                images[row['path']] = open_image(row['path'])
+            label = f' ({row["label"]})' if row.get('label') else ''
+            content.extend([{'type': 'text', 'text': f'<Image {index}>{label}'},
+                            {'type': 'image', 'image': images[row['path']]}])
+        content.append({'type': 'text', 'text': question['text']})
+        messages = [{'role': 'system', 'content': system}, {'role': 'user', 'content': content}]
+        pixels = image_tokens(len(question['images'])) * 32 * 32
+        inputs = tokenize(processor, messages, pixels)
+        prepared.append((messages, pixels, inputs if inputs.input_ids.shape[-1] <= 6500 else None,
+                         int(inputs.input_ids.shape[-1])))
+    stats.update(input_tokens=[row[3] for row in prepared], preprocess_seconds=time.monotonic() - preparing)
+    answers = [None] * len(questions)
+    timings = [dict(input_tokens=row[3]) for row in prepared]
+    for index, row in enumerate(prepared):
+        if row[2] is None:
+            answers[index] = dict(error='context_length', text='', tokens=0, seconds=0.)
+            timings[index].update(error='context_length')
+    if all(answer is not None for answer in answers):
+        raise ValueError('context_length')
+    model, device = load_model(folder, torch, stats, checkpoint)
+    loaded = time.monotonic()
+    stats['answer_timings'] = timings
+    checkpoint('prefill', 'answering', answered=0, questions=len(questions))
+    for index, (messages, pixels, inputs, _) in enumerate(prepared):
+        if inputs is None:
+            continue
+        started = time.monotonic()
+        shown = [0.]
+        def on_token(timing):
+            timings[index].update(timing)
+            if time.monotonic() - shown[0] > .5:
+                checkpoint('decode', 'answering', answered=index, questions=len(questions))
+                shown[0] = time.monotonic()
+        ids, _ = generate(torch, model, inputs.to(device), value['max_tokens'], started, on_token)
+        text = processor.decode(ids, skip_special_tokens=True).strip()
+        answer = dict(text=text, tokens=len(ids))
+        if len(ids) >= value['max_tokens']:
+            answer['truncated'] = True
+        if value['format'] == 'json':
+            try:
+                answer['text'], answer['json'] = parse_json(text)
+            except ValueError:
+                # One correction turn with the same images; the model sees its reply.
+                retry = messages + [{'role': 'assistant', 'content': text},
+                                    {'role': 'user', 'content': ASK_JSON_RETRY}]
+                answer['retried'] = True
+                retry_inputs = tokenize(processor, retry, pixels)
+                if retry_inputs.input_ids.shape[-1] > 6500 or (stats.get('kv_reserve') == 'one_answer' and
+                        retry_inputs.input_ids.shape[-1] + value['max_tokens'] > stats['kv_positions']):
+                    answer['error'] = 'invalid_json'
+                else:
+                    ids, _ = generate(torch, model, retry_inputs.to(device), value['max_tokens'],
+                                      time.monotonic(), lambda timing: None)
+                    text = processor.decode(ids, skip_special_tokens=True).strip()
+                    answer.update(text=text, tokens=answer['tokens'] + len(ids))
+                    if len(ids) >= value['max_tokens']:
+                        answer['truncated'] = True
+                    try:
+                        answer['text'], answer['json'] = parse_json(text)
+                    except ValueError:
+                        answer['error'] = 'invalid_json'
+        answer['seconds'] = time.monotonic() - started
+        answers[index] = answer
+        timings[index].update(seconds=answer['seconds'], output_tokens=answer['tokens'],
+                              truncated=bool(answer.get('truncated')), retried=bool(answer.get('retried')),
+                              **({'error': answer['error']} if 'error' in answer else {}))
+        checkpoint('decode', 'answering', answered=index + 1, questions=len(questions))
+    stats.update(answer_seconds=time.monotonic() - loaded, stage='complete')
+    emit(phase='complete', answers=answers, diagnostics=dict(stats))
+
+
+def main():
+    stats = {}
+    value = {}
+    prestarting = os.environ.get(PRESTART_ENV) == '1'
+    requested = False
+    stop_on_signal()
+    try:
+        if prestarting:
+            started = time.monotonic()
+            torch, _ = import_dependencies()
+            # This is the only CUDA query allowed before a request; it neither
+            # opens the driver nor initializes a context.
+            if torch.cuda.is_initialized():
+                raise RuntimeError('Prestart imports initialized CUDA')
+            imported = time.monotonic() - started
+            ready_epoch = time.time()
+            emit(phase='ready', import_seconds=imported, pid=os.getpid(), cuda_initialized=False)
+            data = wait_request(max(0., float(os.environ.get(PRESTART_TIMEOUT_ENV, '300'))))
+            if data is None:
+                return 0
+            value = json.loads(data)
+            requested = True
+            metadata = value.pop('_prewarm', {})
+            waited = max(0., ready_epoch - metadata.get('sent_epoch', ready_epoch))
+            stats.update(prewarm_import_seconds=imported, import_seconds=waited)
+            stats['available_memory_at_start_bytes'] = request_memory(stats)
+        else:
+            value = json.loads(sys.stdin.buffer.read(1024 * 1024))
+        if isinstance(value, dict):
+            # Set by the service for the run that follows one that ran out of graphics memory.
+            extra = value.pop('_extra_vram_reserve_bytes', 0)
+            if type(extra) is int and extra > 0:
+                stats['extra_vram_reserve_bytes'] = extra
+        run(Path(sys.argv[1]), value, stats=stats)
+    except Cancelled:
+        settle()
+        emit(phase='cancelled')
+        return 0
+    except Exception as error:
+        if not prestarting or requested:
+            gpu_snapshot(stats)
+        mode = value.get('mode') if isinstance(value, dict) else None
+        emit(phase='failed', diagnostics=stats, **failure(error, mode))
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

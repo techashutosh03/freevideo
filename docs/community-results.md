@@ -1,0 +1,171 @@
+# Community results
+
+Thanks to the community members who sent diagnostic reports. FreeVideo already runs on everything from 8 GB laptops to professional workstations; the table below summarizes the measurements and optimizations from these reports:
+
+| GPU | VRAM | RAM | Resolution | Length | Quality | Version | Time | Optimized&nbsp;in | After |
+|---|---:|---:|---:|---:|:---:|:---:|---:|:---:|---:|
+| 4060&nbsp;Ti | 16&nbsp;GB | 32&nbsp;GB | 1920×1088 | 15&nbsp;s | Light | 0.3.0 | 3306&nbsp;s | 0.3.6 | 2730&nbsp;s&nbsp;(−580&nbsp;s) |
+| 5060 | 8&nbsp;GB | 16&nbsp;GB | 1344×768 | 15&nbsp;s | Light | 0.3.1 | 1367&nbsp;s | 0.3.6 | 1160&nbsp;s&nbsp;(−210&nbsp;s) |
+| 3070&nbsp;Ti | 8&nbsp;GB | 96&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.1 | 749&nbsp;s | 0.3.22 | 665&nbsp;s&nbsp;(−80&nbsp;s)⁶ |
+| 4060 | 8&nbsp;GB | 32&nbsp;GB | 768×1344 | 15&nbsp;s | Light | 0.3.4 | 1592&nbsp;s | 0.3.10 | 1450&nbsp;s&nbsp;(−140&nbsp;s) |
+| 5070&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 5&nbsp;s | Light | 0.3.4 | 555&nbsp;s | 0.3.10 | 485&nbsp;s&nbsp;(−70&nbsp;s) |
+| PRO&nbsp;5000 | 72&nbsp;GB | 128&nbsp;GB | 768×1344 | 10&nbsp;s | High | 0.3.4 | 552&nbsp;s | 0.3.4 | Already&nbsp;optimal |
+| 4070&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 8&nbsp;s | Light | 0.3.5 | 1031&nbsp;s | 0.3.21 | 830&nbsp;s&nbsp;(−200&nbsp;s) |
+| 3070&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 5&nbsp;s | Light | 0.3.8 | 3821&nbsp;s | 0.3.8 | Thermal‑limited¹ |
+| 5080&nbsp;Laptop | 16&nbsp;GB | 32&nbsp;GB | 1184×672 | 10&nbsp;s | Light | 0.3.8 | 416&nbsp;s | 0.3.21 | 385&nbsp;s&nbsp;(−30&nbsp;s) |
+| 5090 | 32&nbsp;GB | 32&nbsp;GB | 1344×768 | 6.6&nbsp;s | Max | 0.3.8 | 336&nbsp;s | 0.3.8 | No&nbsp;report&nbsp;data |
+| 5070&nbsp;Ti | 16&nbsp;GB | 48&nbsp;GB | 576×928 | 12.3&nbsp;s | Medium | 0.3.8 | 472&nbsp;s | int8&nbsp;model² | 420&nbsp;s&nbsp;(−50&nbsp;s) |
+| A5000&nbsp;Laptop | 16&nbsp;GB | 128&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.8 | 1108&nbsp;s | 0.3.8 | Thermal‑limited¹ |
+| 4060&nbsp;Ti | 16&nbsp;GB | 32&nbsp;GB | 1344×768 | 15&nbsp;s | Max | 0.3.8 | 9829&nbsp;s | 0.3.10 | 2890&nbsp;s&nbsp;(−6940&nbsp;s) |
+| 5050&nbsp;Laptop | 8&nbsp;GB | 16&nbsp;GB | 960×544 | 3&nbsp;s | Light³ | 0.3.8 | 2313&nbsp;s | 0.3.18 | 2130&nbsp;s&nbsp;(−180&nbsp;s) |
+| 3070 | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.13 | 899&nbsp;s | 0.3.15 | 880&nbsp;s&nbsp;(−20&nbsp;s) |
+| 5060&nbsp;Ti | 16&nbsp;GB | 64&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.13 | 508&nbsp;s | 0.3.17 | 495&nbsp;s&nbsp;(−10&nbsp;s) |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 64&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.14 | 1296&nbsp;s | 0.3.21 | 1250&nbsp;s&nbsp;(−50&nbsp;s) |
+| 5060 | 8&nbsp;GB | 16&nbsp;GB | 1280×736 | 15&nbsp;s | Light | 0.3.14 | 5285&nbsp;s | 0.3.21 | 4650&nbsp;s&nbsp;(−640&nbsp;s) |
+| 4070&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 960×544 | 5&nbsp;s | Light | 0.3.17 | 813&nbsp;s | 0.3.21 | 590&nbsp;s&nbsp;(−220&nbsp;s) |
+| M4&nbsp;Max | Unified | 64&nbsp;GB | 768×1344 | 5&nbsp;s | Light | 0.3.5 | 2078&nbsp;s | 0.3.5 | Already&nbsp;optimal |
+| 5090&nbsp;Laptop | 24&nbsp;GB | 64&nbsp;GB | 768×1344 | 2.3&nbsp;s | — | 0.3.18 | 132&nbsp;s | 0.3.21 | 122&nbsp;s&nbsp;(−10&nbsp;s)⁴ |
+| 4060&nbsp;Ti | 16&nbsp;GB | 80&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.20 | 1122&nbsp;s | 0.3.21 | 1110&nbsp;s&nbsp;(−10&nbsp;s) |
+| 5070&nbsp;Ti&nbsp;Laptop | 12&nbsp;GB | 32&nbsp;GB | 1344×768 | 10&nbsp;s | High | 0.3.20 | 1545&nbsp;s | 0.3.21 | 1310&nbsp;s&nbsp;(−240&nbsp;s) |
+| 5060&nbsp;Ti | 16&nbsp;GB | 64&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.20 | 471&nbsp;s | 0.3.21 | 465&nbsp;s&nbsp;(−10&nbsp;s) |
+| 4070&nbsp;SUPER | 12&nbsp;GB | 32&nbsp;GB | 1344×768 | 15&nbsp;s | High | 0.3.20 | 2966&nbsp;s | 0.3.21 | 2050&nbsp;s&nbsp;(−920&nbsp;s) |
+| 4070&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 544×960 | 3&nbsp;s | Light⁵ | 0.3.22 | 133&nbsp;s | 0.3.22 | Already&nbsp;optimal |
+| M4&nbsp;Pro | Unified | 24&nbsp;GB | 960×544 | 10&nbsp;s | Light | 0.3.8 | 3457&nbsp;s | 0.3.8 | Already&nbsp;optimal |
+| 5090 | 32&nbsp;GB | 64&nbsp;GB | 1376×768 | 10&nbsp;s | Light | 0.3.20 | 294&nbsp;s | 0.3.23 | 265&nbsp;s&nbsp;(−30&nbsp;s) |
+| 5060&nbsp;Laptop | 8&nbsp;GB | 16&nbsp;GB | 960×544 | 3&nbsp;s | Light | 0.3.21 | 908&nbsp;s | 0.3.23 | 820&nbsp;s&nbsp;(−90&nbsp;s) |
+| 3060 | 12&nbsp;GB | 64&nbsp;GB | 1184×672 | 10&nbsp;s | Light⁵ | 0.3.22 | 604&nbsp;s | 0.3.23 | 565&nbsp;s&nbsp;(−40&nbsp;s) |
+| 4070 | 12&nbsp;GB | 32&nbsp;GB | 960×544 | 10&nbsp;s | Light | 0.3.22 | 340&nbsp;s | 0.3.22 | Already&nbsp;optimal |
+| 5090 | 32&nbsp;GB | 64&nbsp;GB | 1344×768 | 10.8&nbsp;s | Light | 0.3.22 | 249&nbsp;s | 0.3.22 | Already&nbsp;optimal |
+| 3090 | 24&nbsp;GB | 64&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.23 | 704&nbsp;s | 0.3.23 | Already&nbsp;optimal |
+| 5060&nbsp;Ti | 16&nbsp;GB | 32&nbsp;GB | 1344×768 | 12.3&nbsp;s | Light | 0.3.23 | 573&nbsp;s | 0.3.23 | Already&nbsp;optimal |
+| 5080 | 16&nbsp;GB | 64&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.23 | 240&nbsp;s | 0.3.23 | Already&nbsp;optimal |
+| 3060&nbsp;Ti | 8&nbsp;GB | 48&nbsp;GB | 960×544 | 10&nbsp;s | Light | 0.3.22 | 508&nbsp;s | 0.3.24 | 490&nbsp;s&nbsp;(−20&nbsp;s) |
+| 3070&nbsp;Laptop | 8&nbsp;GB | 24&nbsp;GB | 864×480 | 5&nbsp;s | Light | 0.3.22 | 677&nbsp;s | 0.3.24 | 645&nbsp;s&nbsp;(−30&nbsp;s) |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 16&nbsp;GB | 1312×768 | 10&nbsp;s | Light | 0.3.23 | 1024&nbsp;s | 0.3.23 | Already&nbsp;optimal |
+| 3060 | 12&nbsp;GB | 96&nbsp;GB | 768×1344 | 5&nbsp;s | Light | 0.3.23 | 493&nbsp;s | 0.3.23 | Already&nbsp;optimal |
+| M5&nbsp;Pro | Unified | 48&nbsp;GB | 960×544 | 5&nbsp;s | Light | 0.3.23 | 527&nbsp;s | 0.3.23 | Already&nbsp;optimal |
+| 4090 | 24&nbsp;GB | 64&nbsp;GB | 1344×768 | 30.7&nbsp;s | Max | 0.3.23 | 5829&nbsp;s | 0.3.25 | 4850&nbsp;s&nbsp;(−980&nbsp;s) |
+| 5060 | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.23 | 1279&nbsp;s | 0.3.25 | 1150&nbsp;s&nbsp;(−130&nbsp;s) |
+| 3060 | 12&nbsp;GB | 32&nbsp;GB | 832×1248 | 10&nbsp;s | Light | 0.3.24 | 1668&nbsp;s | 0.3.24 | GPU&nbsp;shared⁷ |
+| 5080 | 16&nbsp;GB | 64&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.24 | 312&nbsp;s | 0.3.24 | 278&nbsp;s&nbsp;(−34&nbsp;s) |
+| 4070&nbsp;Ti&nbsp;SUPER | 16&nbsp;GB | 96&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.24 | 575&nbsp;s | 0.3.24 | Already&nbsp;optimal |
+| 4080&nbsp;Laptop | 12&nbsp;GB | 32&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.24 | 970&nbsp;s | 0.3.24 | Already&nbsp;optimal |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 768×1344 | 6.6&nbsp;s | Light⁵ | 0.3.24 | 386&nbsp;s | 0.3.24 | Already&nbsp;optimal |
+| 5060&nbsp;Ti | 16&nbsp;GB | 32&nbsp;GB | 768×1344 | 15.1&nbsp;s | Light | 0.3.24 | 847&nbsp;s | 0.3.24 | Already&nbsp;optimal |
+| 5060 | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 4.5&nbsp;s | Light | 0.3.25 | 390&nbsp;s | 0.3.25 | Already&nbsp;optimal |
+| M4&nbsp;Pro | Unified | 48&nbsp;GB | 1120×928 | 10&nbsp;s | Light⁵ | 0.3.20 | 5197&nbsp;s | 0.3.20 | Already&nbsp;optimal |
+| 3080 | 20&nbsp;GB | 64&nbsp;GB | 1344×768 | 20&nbsp;s | High | 0.3.20 | 2526&nbsp;s | 0.4.0 | 2335&nbsp;s&nbsp;(−191&nbsp;s) |
+| 5070&nbsp;Ti&nbsp;Laptop | 12&nbsp;GB | 32&nbsp;GB | 960×544 | 6.6&nbsp;s | Medium | 0.3.23 | 291&nbsp;s | 0.3.23 | Already&nbsp;optimal |
+| 3090 | 24&nbsp;GB | 32&nbsp;GB | 1024×576 | 15&nbsp;s | Light | 0.3.23 | 1504&nbsp;s⁸ | 0.4.0 | 1455&nbsp;s&nbsp;(−50&nbsp;s) |
+| 3060 | 12&nbsp;GB | 40&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.24 | 1676&nbsp;s⁹ | 0.4.0 | 1660&nbsp;s&nbsp;(−20&nbsp;s) |
+| 3060 | 12&nbsp;GB | 32&nbsp;GB | 960×544 | 10&nbsp;s | Light | 0.3.25 | 769&nbsp;s | 0.4.0 | 755&nbsp;s&nbsp;(−15&nbsp;s) |
+| 3070&nbsp;Laptop | 16&nbsp;GB | 32&nbsp;GB | 960×544 | 15&nbsp;s | Light | 0.3.25 | 1539&nbsp;s | 0.4.0 | 1520&nbsp;s&nbsp;(−20&nbsp;s) |
+| 3070&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 5&nbsp;s | Light | 0.3.25 | 513&nbsp;s | 0.4.0 | 500&nbsp;s&nbsp;(−13&nbsp;s) |
+| 3070&nbsp;Ti | 8&nbsp;GB | 64&nbsp;GB | 1344×768 | 10&nbsp;s | Max | 0.3.25 | 8501&nbsp;s | 0.4.0 | 8490&nbsp;s&nbsp;(−11&nbsp;s) |
+| 3060 | 12&nbsp;GB | 128&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.3.25 | 1074&nbsp;s | 0.4.0 | 1055&nbsp;s&nbsp;(−19&nbsp;s) |
+| 5060&nbsp;Ti | 16&nbsp;GB | 16&nbsp;GB | 960×544 | 4.5&nbsp;s | Light | 0.3.25 | 1366&nbsp;s | 0.4.1 | 1100&nbsp;s&nbsp;(−270&nbsp;s) |
+| 4070&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 10&nbsp;s | Light⁵ | 0.4.1 | 1297&nbsp;s | 0.4.1 | 585&nbsp;s&nbsp;(−710&nbsp;s) |
+| 3070 | 16&nbsp;GB | 32&nbsp;GB | 1344×768 | 12.3&nbsp;s | Max | 0.4.0 | 10090&nbsp;s | 0.4.0 | GPU&nbsp;shared¹⁰ |
+| 3060 | 12&nbsp;GB | 32&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.4.3 | 1297&nbsp;s | 0.4.3 | Already&nbsp;optimal |
+| 4060&nbsp;Ti | 8&nbsp;GB | 16&nbsp;GB | 672×1184 | 6.6&nbsp;s | Light | 0.4.0 | 887&nbsp;s¹¹ | 0.4.0 | 887&nbsp;s |
+| 3070&nbsp;Laptop | 8&nbsp;GB | 27&nbsp;GB | 1344×768 | 10&nbsp;s | Light⁵ | 0.4.4 | 625&nbsp;s | 0.4.4 | Already&nbsp;optimal |
+| 5070&nbsp;Laptop | 8&nbsp;GB | 47&nbsp;GB | 960×544 | 5.2&nbsp;s | Light | 0.4.4 | 554&nbsp;s | 0.4.4 | Already&nbsp;optimal |
+| 5060&nbsp;Ti | 16&nbsp;GB | 126&nbsp;GB | 1344×768 | 10&nbsp;s | Medium | 0.4.4 | 753&nbsp;s | 0.4.4 | Already&nbsp;optimal |
+| 5090 | 32&nbsp;GB | 96&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.4.4 | 400&nbsp;s | 0.4.4 | Already&nbsp;optimal |
+| 3060 | 12&nbsp;GB | 32&nbsp;GB | 1088×1920 | 15&nbsp;s | Light | 0.4.3 | 4292&nbsp;s | 0.4.5 | 4245&nbsp;s&nbsp;(−47&nbsp;s) |
+| 5090 | 32&nbsp;GB | 96&nbsp;GB | 1344×768 | 10&nbsp;s | Max | 0.4.4 | 517&nbsp;s | 0.4.4 | Already&nbsp;optimal |
+| 5070&nbsp;Ti&nbsp;Laptop | 12&nbsp;GB | 32&nbsp;GB | 1344×768 | 4.5&nbsp;s | Max | 0.4.5 | 819&nbsp;s | 0.4.5 | Already&nbsp;optimal |
+| 3090 | 24&nbsp;GB | 64&nbsp;GB | 1344×768 | 6.6&nbsp;s | Light | 0.3.24 | 461&nbsp;s | 0.4.0 | 430&nbsp;s&nbsp;(−31&nbsp;s) |
+| 3060&nbsp;Laptop | 6&nbsp;GB | 40&nbsp;GB | 1344×768 | 5.2&nbsp;s | Light | 0.4.7 | 510&nbsp;s | 0.4.7 | Already&nbsp;optimal |
+| 5060&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 3&nbsp;s | Medium | 0.4.7 | 541&nbsp;s | 0.4.7 | Already&nbsp;optimal |
+| 5060&nbsp;Ti | 16&nbsp;GB | 34&nbsp;GB | 1344×768 | 5.2&nbsp;s | Medium | 0.4.8 | 2521&nbsp;s | 0.4.8 | Already&nbsp;optimal¹² |
+| 4060 | 8&nbsp;GB | 32&nbsp;GB | 768×1344 | 17&nbsp;s | Light | 0.4.8 | 1942&nbsp;s | 0.4.8 | Already&nbsp;optimal |
+| M1&nbsp;Max | Unified | 64&nbsp;GB | 960×544 | 2.3&nbsp;s | Light | 0.4.8 | 1226&nbsp;s | 0.4.8 | Already&nbsp;optimal |
+| 3070 | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 5.2&nbsp;s | Light⁵ | 0.4.8 | 285&nbsp;s | 0.4.8 | Already&nbsp;optimal |
+| 3060 | 12&nbsp;GB | 34&nbsp;GB | 1664×960 | 6.6&nbsp;s | Medium | 0.4.8 | 4025&nbsp;s | 0.4.8 | Already&nbsp;optimal¹² |
+| 4070&nbsp;Laptop | 8&nbsp;GB | 34&nbsp;GB | 1344×768 | 15&nbsp;s | Light⁵ | 0.4.8 | 1444&nbsp;s | 0.4.8 | Already&nbsp;optimal¹² |
+| 5060&nbsp;Ti | 16&nbsp;GB | 56&nbsp;GB | 960×544 | 10&nbsp;s | Light | 0.4.6 | 904&nbsp;s | 0.4.9 | 805&nbsp;s&nbsp;(−99&nbsp;s) |
+| 3070&nbsp;Laptop | 8&nbsp;GB | 64&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.4.9 | 1267&nbsp;s | 0.4.9 | Already&nbsp;optimal |
+| 3060 | 12&nbsp;GB | 64&nbsp;GB | 768×1344 | 5&nbsp;s | Light | 0.4.12 | 639&nbsp;s | 0.4.12 | Already&nbsp;optimal |
+| 5080 | 16&nbsp;GB | 64&nbsp;GB | 768×1344 | 3&nbsp;s | Max | 0.3.20 | 216&nbsp;s | 0.3.20 | Already&nbsp;optimal |
+| 4060&nbsp;Ti | 8&nbsp;GB | 32&nbsp;GB | 960×544 | 5&nbsp;s | Light | 0.4.12 | 333&nbsp;s | 0.4.12 | Already&nbsp;optimal |
+| 5070&nbsp;Ti | 16&nbsp;GB | 64&nbsp;GB | 1184×672 | 15&nbsp;s | Medium | 0.4.13 | 487&nbsp;s | 0.4.13 | Already&nbsp;optimal |
+| 3070 | 16&nbsp;GB | 32&nbsp;GB | 768×1344 | 5.2&nbsp;s | Light | 0.4.14 | 2380&nbsp;s | 0.4.14 | Already&nbsp;optimal |
+| M4&nbsp;Max | Unified | 128&nbsp;GB | 768×1344 | 10&nbsp;s | Light | 0.4.14 | 3444&nbsp;s | 0.4.14 | Already&nbsp;optimal |
+| 4060&nbsp;Ti | 8&nbsp;GB | 32&nbsp;GB | 672×1184 | 10.8&nbsp;s | Light | 0.4.14 | 936&nbsp;s | 0.4.14 | Already&nbsp;optimal |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 16&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.4.15 | 1147&nbsp;s | 0.4.15 | Already&nbsp;optimal |
+| 3060 | 12&nbsp;GB | 24&nbsp;GB | 1344×768 | 13.7&nbsp;s | Light | 0.4.15 | 1747&nbsp;s | 0.4.20 | 1700&nbsp;s&nbsp;(−50&nbsp;s) |
+| 5070&nbsp;Laptop | 8&nbsp;GB | 64&nbsp;GB | 1184×672 | 10&nbsp;s | Light | 0.4.15 | 822&nbsp;s | int8&nbsp;model² | 720&nbsp;s&nbsp;(−100&nbsp;s) |
+| 5080 | 16&nbsp;GB | 64&nbsp;GB | 1024×1024 | 15&nbsp;s | Light | 0.4.16 | 412&nbsp;s | 0.4.16 | Already&nbsp;optimal |
+| M1&nbsp;Max | Unified | 64&nbsp;GB | 960×544 | 5.2&nbsp;s | Light | 0.4.16 | 1816&nbsp;s | 0.4.16 | Already&nbsp;optimal |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 5.2&nbsp;s | Light⁵ | 0.4.17 | 470&nbsp;s | 0.4.17 | Already&nbsp;optimal |
+| 3060 | 12&nbsp;GB | 32&nbsp;GB | 1344×768 | 10.8&nbsp;s | Light⁵ | 0.4.17 | 967&nbsp;s | 0.4.19 | 880&nbsp;s&nbsp;(−90&nbsp;s) |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 10&nbsp;s | Max | 0.4.17 | 2311&nbsp;s | 0.4.17 | Already&nbsp;optimal |
+| 5080 | 16&nbsp;GB | 48&nbsp;GB | 768×1344 | 12.3&nbsp;s | Light | 0.4.17 | 293&nbsp;s | 0.4.17 | Already&nbsp;optimal |
+| 3060 | 12&nbsp;GB | 64&nbsp;GB | 960×544 | 9.4&nbsp;s | Light | 0.4.17 | 743&nbsp;s | 0.4.17 | Already&nbsp;optimal |
+| 3060 | 12&nbsp;GB | 32&nbsp;GB | 768×1344 | 5.2&nbsp;s | Light | 0.4.17 | 811&nbsp;s | 0.4.17 | Already&nbsp;optimal |
+| 5070&nbsp;Ti | 16&nbsp;GB | 32&nbsp;GB | 1184×672 | 15&nbsp;s | Light | 0.4.19 | 447&nbsp;s | 0.4.19 | Already&nbsp;optimal |
+| 4060 | 8&nbsp;GB | 32&nbsp;GB | 960×544 | 15&nbsp;s | Light | 0.4.19 | 1311&nbsp;s | 0.4.19 | Already&nbsp;optimal |
+| M5 | Unified | 24&nbsp;GB | 1344×768 | 10&nbsp;s | Max | 0.4.12 | 30509&nbsp;s | 0.4.14 | 27000&nbsp;s&nbsp;(−3500&nbsp;s) |
+| 4070&nbsp;Ti | 12&nbsp;GB | 64&nbsp;GB | 960×544 | 10&nbsp;s | Light | 0.4.19 | 236&nbsp;s | 0.4.19 | Already&nbsp;optimal |
+| 3090 | 24&nbsp;GB | 128&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.4.19 | 377&nbsp;s | 0.4.19 | Already&nbsp;optimal |
+| 3060 | 12&nbsp;GB | 32&nbsp;GB | 672×1184 | 15&nbsp;s | Light | 0.4.20 | 1608&nbsp;s | 0.4.20 | Already&nbsp;optimal |
+| M5&nbsp;Max | Unified | 128&nbsp;GB | 1664×960 | 3&nbsp;s | Light | 0.4.18 | 755&nbsp;s | 0.4.18 | Already&nbsp;optimal |
+| 5050&nbsp;Laptop | 8&nbsp;GB | 24&nbsp;GB | 544×960 | 8&nbsp;s | Light | 0.4.21 | 534&nbsp;s | 0.4.21 | Already&nbsp;optimal |
+| 3080 | 10&nbsp;GB | 32&nbsp;GB | 768×1344 | 15&nbsp;s | Max | 0.4.22 | 1965&nbsp;s | 0.4.22 | Already&nbsp;optimal |
+| 4090&nbsp;Laptop | 16&nbsp;GB | 64&nbsp;GB | 1344×768 | 10&nbsp;s | Medium | 0.4.14 | 590&nbsp;s | 0.4.17 | 570&nbsp;s&nbsp;(−20&nbsp;s) |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 960×544 | 10&nbsp;s | Light | 0.4.6 | 517&nbsp;s | 0.4.6 | Already&nbsp;optimal |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 16&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.4.14 | 1168&nbsp;s | 0.4.14 | Already&nbsp;optimal |
+| 5070&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 11.5&nbsp;s | Light | 0.4.17 | 1003&nbsp;s | 0.4.24 | 900&nbsp;s&nbsp;(−100&nbsp;s) |
+| 3070&nbsp;Ti | 8&nbsp;GB | 64&nbsp;GB | 1344×768 | 16.5&nbsp;s | Light | 0.4.17 | 1623&nbsp;s | 0.4.24 | 1570&nbsp;s&nbsp;(−50&nbsp;s) |
+| 3060&nbsp;Ti | 8&nbsp;GB | 32&nbsp;GB | 768×1344 | 10&nbsp;s | Light | 0.4.18 | 843&nbsp;s | 0.4.24 | 810&nbsp;s&nbsp;(−33&nbsp;s) |
+| 5060 | 8&nbsp;GB | 32&nbsp;GB | 672×1184 | 11.5&nbsp;s | Light | 0.4.18 | 707&nbsp;s | 0.4.24 | 680&nbsp;s&nbsp;(−27&nbsp;s) |
+| 5070&nbsp;Ti&nbsp;Laptop | 12&nbsp;GB | 32&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.4.23 | 373&nbsp;s¹³ | 0.4.23 | Thermal‑limited¹ |
+| 5060 | 8&nbsp;GB | 48&nbsp;GB | 768×1344 | 14&nbsp;s | Medium | 0.3.25 | 3474&nbsp;s | 0.3.25 | Already&nbsp;optimal |
+| 3060 | 12&nbsp;GB | 32&nbsp;GB | 896×1120 | 10&nbsp;s | Light | 0.3.25 | 1045&nbsp;s | 0.4.0 | 1025&nbsp;s&nbsp;(−20&nbsp;s) |
+| 3060&nbsp;Laptop | 6&nbsp;GB | 40&nbsp;GB | 960×544 | 15&nbsp;s | Light⁵ | 0.4.24 | 713&nbsp;s | 0.4.24 | Thermal‑limited¹ |
+| 5060 | 8&nbsp;GB | 64&nbsp;GB | 544×960 | 11.5&nbsp;s | Light | 0.4.26 | 743&nbsp;s¹³ | 0.4.26 | Already&nbsp;optimal¹² |
+| 3050&nbsp;Laptop | 6&nbsp;GB | 16&nbsp;GB | 1184×672 | 10&nbsp;s | High | 0.4.23 | 5773&nbsp;s | 0.4.31 | 4300&nbsp;s&nbsp;(−1470&nbsp;s) |
+| 5080 | 16&nbsp;GB | 32&nbsp;GB | 1920×1088 | 10&nbsp;s | Light | 0.4.18 | 1850&nbsp;s | 0.4.21 | 860&nbsp;s&nbsp;(−990&nbsp;s) |
+| 4060&nbsp;Ti | 8&nbsp;GB | 32&nbsp;GB | 960×544 | 6&nbsp;s | Light | 0.4.27 | 241&nbsp;s | 0.4.28 | 190&nbsp;s&nbsp;(−50&nbsp;s) |
+| 3060 | 12&nbsp;GB | 32&nbsp;GB | 672×1184 | 3&nbsp;s | Light | 0.4.28 | 469&nbsp;s | 0.4.28 | 430&nbsp;s&nbsp;(−40&nbsp;s) |
+| 5080&nbsp;Laptop | 16&nbsp;GB | 64&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.4.29 | 647&nbsp;s | 0.4.29 | Already&nbsp;optimal |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 16&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.4.30 | 1056&nbsp;s | 0.4.30 | Already&nbsp;optimal |
+| 5070&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 768×1344 | 2.3&nbsp;s | Max¹² | 0.4.30 | 2195&nbsp;s | 0.4.30 | Compatibility&nbsp;level&nbsp;3¹⁴ |
+| 5080&nbsp;Laptop | 16&nbsp;GB | 64&nbsp;GB | 2496×832 | 8&nbsp;s | Light⁵ | 0.4.30 | 777&nbsp;s | 0.4.30 | Already&nbsp;optimal |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 9.4&nbsp;s | Light | 0.4.31 | 806&nbsp;s | 0.4.31 | Already&nbsp;optimal |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.4.32 | 802&nbsp;s | 0.4.32 | Already&nbsp;optimal |
+| 3050&nbsp;Laptop | 8&nbsp;GB | 40&nbsp;GB | 960×544 | 5&nbsp;s | Light | 0.4.33 | 890&nbsp;s | 0.4.33 | Already&nbsp;optimal |
+| 3070&nbsp;Laptop | 8&nbsp;GB | 64&nbsp;GB | 960×544 | 5&nbsp;s | Light | 0.4.33 | 260&nbsp;s | 0.4.33 | Already&nbsp;optimal |
+| 3070 | 8&nbsp;GB | 64&nbsp;GB | 736×736 | 10&nbsp;s | Light | 0.4.35 | 471&nbsp;s | 0.4.35 | Already&nbsp;optimal |
+| 5060 | 8&nbsp;GB | 64&nbsp;GB | 1088×1920 | 5.9&nbsp;s | Medium | 0.4.31 | 1259&nbsp;s | 0.4.31 | Already&nbsp;optimal¹² |
+| 3050 | 8&nbsp;GB | 32&nbsp;GB | 1344×768 | 5&nbsp;s | Light | 0.4.35 | 978&nbsp;s | 0.4.35 | Already&nbsp;optimal¹² |
+| 4070&nbsp;Ti&nbsp;SUPER | 16&nbsp;GB | 32&nbsp;GB | 1344×768 | 12&nbsp;s | Light | 0.4.37 | 3427&nbsp;s | 0.5.3 | 2200&nbsp;s&nbsp;(−1230&nbsp;s)¹² |
+| 4070 | 12&nbsp;GB | 64&nbsp;GB | 1344×768 | 8&nbsp;s | Light⁵ | 0.4.38 | 269&nbsp;s | 0.4.38 | Already&nbsp;optimal |
+| 5060&nbsp;Ti | 16&nbsp;GB | 32&nbsp;GB | 960×544 | 5.2&nbsp;s | Light | 0.4.38 | 348&nbsp;s | 0.4.38 | Already&nbsp;optimal |
+| 5060 | 8&nbsp;GB | 64&nbsp;GB | 960×1664 | 11.5&nbsp;s | Light⁵ | 0.4.38 | 1035&nbsp;s | 0.4.38 | Already&nbsp;optimal¹² |
+| 5090 | 32&nbsp;GB | 128&nbsp;GB | 1088×1920 | 10&nbsp;s | Light | 0.5.0 | 638&nbsp;s | 0.5.0 | Already&nbsp;optimal¹² |
+| 3060&nbsp;Ti | 8&nbsp;GB | 16&nbsp;GB | 1344×768 | 5.2&nbsp;s | Light | 0.5.0 | 2102&nbsp;s | 0.5.0 | Already&nbsp;optimal¹²,¹⁵ |
+| 5060&nbsp;Ti | 8&nbsp;GB | 16&nbsp;GB | 768×1344 | 8&nbsp;s | Light | 0.4.33 | 594&nbsp;s | 0.4.33 | Already&nbsp;optimal |
+| 5060&nbsp;Ti | 16&nbsp;GB | 32&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.5.1 | 716&nbsp;s | 0.5.1 | Already&nbsp;optimal |
+| 4060&nbsp;Laptop | 8&nbsp;GB | 16&nbsp;GB | 1344×768 | 10&nbsp;s | Light | 0.5.1 | 882&nbsp;s | 0.5.1 | Already&nbsp;optimal |
+| M4&nbsp;Max | Unified | 128&nbsp;GB | 1344×768 | 10.1&nbsp;s | Light | 0.5.4 | 3399&nbsp;s | 0.5.4 | Already&nbsp;optimal |
+
+- Time: end to end, from submission until the video is saved.
+- After: the estimated time, derived from the report's stage times and from complete planned runs on our test machines (RTX 3090 and RTX 5060 Ti on Windows, RTX PRO 6000 on Linux) under the reporting machine's VRAM and RAM limits, not from reruns on that machine.
+- Already optimal: weight placement and transfers on this machine are already the fastest they can be; the time depends on the GPU's compute and the chosen quality level.
+- ¹ Thermal-limited: the GPU spent most of the run in thermal slowdown (3070 Laptop: 229 MHz on average at 89 °C; A5000 Laptop: 882 MHz on average; 3060 Laptop: 1496 MHz on average at 81 °C), so cooling limited the time.
+- ² This machine still runs the FP8 model; the estimate is for the int8 model, a one-click upgrade in the launcher since 0.3.0.
+- ³ Preview: only the first pass, at half resolution. With 16 GB of RAM most of the model is read from the drive at every step (about 80 MB/s on this machine), which takes most of the time.
+- ⁴ The report had no diagnostic file; the estimate replays the plan for this machine's configuration and measures the same request on our test machines.
+- ⁵ Second pass after a preview: the time covers the latent upscale, the three second-pass steps and decoding, not the first pass, which made the preview in an earlier request.
+- ⁶ Measured on the same machine with 0.3.22.
+- ⁷ GPU shared: the graphics card never became idle during the run (23% utilization and 74 W at its lowest), so it was also doing other work and FreeVideo's steps ran at a little over half their usual speed. With the card free, the same request takes about 1000 s.
+- ⁸ The drive holding the model files reads at about 60 MB/s; reading them took about 900 s of the 1504 s.
+- ⁹ The drive holding the model files reads at about 80 MB/s; reading them took about 570 s of the 1676 s.
+- ¹⁰ GPU shared: other programs were using about 29% of the graphics card during the run, so FreeVideo's steps ran at a little over 70% of their usual speed. With the card free, the same request takes about 7200 s.
+- ¹¹ With 16 GB of RAM, the text encoder and part of the video model cannot stay in memory and are read from the drive; text encoding and the first pass, which wait on these reads, took about 460 s of the 887 s.
+- ¹² Task with a reference: every step also processes the reference video, images or audio, so each step takes longer than a plain request of the same size, up to about twice as long with a long reference.
+- ¹³ Preview (first pass only).
+- ¹⁴ Compatibility level 3 was set manually; it is the slowest level and made each step about 2.4 times slower than the automatic setting for this request, and the GPU core clock also stayed at 900 MHz against the 1815 MHz it reached. With the level off, the same request takes about 1100 s.
+- ¹⁵ The video model is read from the drive again at every step, at about 110 MB/s on this machine; the graphics card was busy for about 9–13% of the first pass and 36% of the second pass.

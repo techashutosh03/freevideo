@@ -1,0 +1,286 @@
+{
+  "version": "2.56.0",
+  "micromamba": {
+    "version": "2.9.0-0",
+    "url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.9.0-0/micromamba-linux-64",
+    "sha256": "366cd9cd8be14df1ab8ed50352a82111082a36686b2d389fdb79a92c3fafb3e3",
+    "bytes": 18292808
+  },
+  "channels": {
+    "official": "https://conda.anaconda.org/conda-forge",
+    "tuna": "https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge",
+    "nju": "https://mirror.nju.edu.cn/anaconda/cloud/conda-forge"
+  },
+  "packages": [
+    {
+      "path": "linux-64/libzlib-1.3.2-h25fd6f3_3.conda",
+      "sha256": "eb8a0db0aa570124f7d2a93d7c7f596e3390df5e047818d873baad32985fc736",
+      "bytes": 63713
+    },
+    {
+      "path": "linux-64/libgomp-16.2.0-he0feb66_7.conda",
+      "sha256": "92a0bb350c7be6a4eedcb4e111c60aefd176018e6b1c009a6e025dbe9bbcd758",
+      "bytes": 640566
+    },
+    {
+      "path": "linux-64/zstd-1.5.7-hb78ec9c_7.conda",
+      "sha256": "47d682b9f6d6ec9eb1a6e6c3e75ea6273e899e78fb7fc59f81d39745009fbc60",
+      "bytes": 601301
+    },
+    {
+      "path": "linux-64/_openmp_mutex-4.5-20_gnu.conda",
+      "sha256": "1dd3fffd892081df9726d7eb7e0dea6198962ba775bd88842135a4ddb4deb3c9",
+      "bytes": 28948
+    },
+    {
+      "path": "linux-64/libgcc-16.2.0-ha9f2e26_7.conda",
+      "sha256": "e031634c3a928f9594eba868bc46ef5230d6571a364a0c63215b06c4563bfcea",
+      "bytes": 1058444
+    },
+    {
+      "path": "linux-64/ncurses-6.6-hdb14827_1.conda",
+      "sha256": "5d46557214ed184381dafe835b7c94a474a1c3b307a08a250b1ea4779b44ffb3",
+      "bytes": 911196
+    },
+    {
+      "path": "linux-64/c-ares-1.34.8-hebe6cf0_2.conda",
+      "sha256": "9c37cc233238adf366ea75b0e845662a5be07ceadf62e458183516369340274b",
+      "bytes": 228700
+    },
+    {
+      "path": "linux-64/libev-4.33-h280c20c_3.conda",
+      "sha256": "e4418f68d01a6307c4431b585c71b584f40189877364e542ee87deb777f5e85b",
+      "bytes": 43220
+    },
+    {
+      "path": "linux-64/keyutils-1.6.3-h7cc23a3_1.conda",
+      "sha256": "dd053c96dcb0dcfd59422aefea9d2fe937a190167f34fba7893ec1e10a7e8963",
+      "bytes": 135295
+    },
+    {
+      "path": "linux-64/bzip2-1.0.8-hda65f42_10.conda",
+      "sha256": "1a0d382c515ebf55f8ee1f38c8b81bc95af5c2acc42ad53b66bc5df932032f96",
+      "bytes": 257808
+    },
+    {
+      "path": "linux-64/libstdcxx-16.2.0-h934c35e_7.conda",
+      "sha256": "fa7018298629fc429971fffd6ecba3d27a7b02e4e890d6a93ea01ffebe8cb745",
+      "bytes": 6615436
+    },
+    {
+      "path": "linux-64/libiconv-1.18-h0cb94f2_3.conda",
+      "sha256": "f943117edb9cd4d9c61cc972eee5a34291dc55ea7a6e9e38da104995841cbcb6",
+      "bytes": 789471
+    },
+    {
+      "path": "linux-64/libxcrypt-4.4.38-h280c20c_0.conda",
+      "sha256": "f7e9292dd219a6435bbb1223da9586c3e70d66d169c5a92f08db3f2127df04e9",
+      "bytes": 101957
+    },
+    {
+      "path": "linux-64/libexpat-2.8.5-hd2095e1_0.conda",
+      "sha256": "6de73033a7c5f712c9c5a54124e4581e025691029835e5bceaf10a333a7e7bc0",
+      "bytes": 77893
+    },
+    {
+      "path": "linux-64/libedit-3.1.20260512-pl5321h373387f_0.conda",
+      "sha256": "45301f14f4eb66da57cfaf2d265f3eeee73f8b07e99614ee3afc5b26eea91126",
+      "bytes": 135877
+    },
+    {
+      "path": "linux-64/pcre2-10.47-h8b3dc9c_1.conda",
+      "sha256": "9ebb10a4eb3be51ae67d85c679f5a7a50cb040ed25c783e6331a225ea09991d4",
+      "bytes": 1218833
+    },
+    {
+      "path": "linux-64/icu-78.3-py310h44b86e0_2.conda",
+      "sha256": "9f07834f0c546ab14d885ce0366285f61f44e326c0edd1fc63b8294e113ae432",
+      "bytes": 14459115
+    },
+    {
+      "path": "linux-64/perl-5.44.0-1_h7cc23a3_perl5.conda",
+      "sha256": "43afad1c27c24ccc40d98461ab7e1648ccac876421a8783167861ae19c4edc83",
+      "bytes": 11438995
+    },
+    {
+      "path": "linux-64/libpsl-0.23.1-hd9e3e90_1.conda",
+      "sha256": "09e8effdc89bc5d021349318d32b85594f5b8d8e3ab8f90a85b81f8fe695a566",
+      "bytes": 72519
+    },
+    {
+      "path": "noarch/ca-certificates-2026.7.22-hbd8a1cb_0.conda",
+      "sha256": "0a0544cf95f64394fe4959286f5c71f5444ad58feb0602e53becb27448d24da6",
+      "bytes": 131780
+    },
+    {
+      "path": "linux-64/openssl-3.6.5-h781a0a9_0.conda",
+      "sha256": "9c1533f1cf784f0e250919c0c9762d0b0e6bc727a79290ffb7cea1ceca1d038c",
+      "bytes": 3195299
+    },
+    {
+      "path": "linux-64/libssh2-1.11.1-h6154650_1.conda",
+      "sha256": "7e463000fa1cba3f3a6597b776f6ab301d425a96e3bc20d0d9d76a3b9f237aa3",
+      "bytes": 306045
+    },
+    {
+      "path": "linux-64/krb5-1.22.2-hbc21106_2.conda",
+      "sha256": "2a5c38c85e63df84c4e69ee71439841ce570d259ae3060627bb9a49a938d66f4",
+      "bytes": 1394333
+    },
+    {
+      "path": "linux-64/libnghttp2-1.68.1-h74cf4be_1.conda",
+      "sha256": "11a2f54a6f391e25738bce0023e6ef499600147bbcf21c1fa69d2e251b03cc6a",
+      "bytes": 649974
+    },
+    {
+      "path": "linux-64/libcurl-8.22.0-ha042cf0_0.conda",
+      "sha256": "483b7eb97f56fbb3a9cb7190d33012dfa0a5aaed99ede61465563cd97dd82504",
+      "bytes": 499651
+    },
+    {
+      "path": "linux-64/git-2.56.0-pl5440h3795e67_0.conda",
+      "sha256": "d5654608f2bed18580fa05e22d80093fc746cc70dea1d6a208e7a9f65b1888e0",
+      "bytes": 11920563
+    }
+  ],
+  "linux_aarch64": {
+    "micromamba": {
+      "version": "2.9.0-0",
+      "url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.9.0-0/micromamba-linux-aarch64",
+      "sha256": "9f93b974adcb4d166996af969b6cd371287d1a3e52733704727884d9b74cb7a7",
+      "bytes": 22020296
+    },
+    "packages": [
+      {
+        "path": "linux-aarch64/libzlib-1.3.2-hdc9db2a_3.conda",
+        "sha256": "76efa6cc9d7e6f5ee3bbca0939f64054af2bdfb3c3632531f8e633cf6c2ea41e",
+        "bytes": 70108
+      },
+      {
+        "path": "linux-aarch64/libgomp-16.2.0-h8acb6b2_7.conda",
+        "sha256": "4406fd67c5beeb99b9372f9bf07aa3e40ca141e337eceebac3ff64aa72799494",
+        "bytes": 617342
+      },
+      {
+        "path": "linux-aarch64/zstd-1.5.7-h9d15635_7.conda",
+        "sha256": "427fd14bcb3b8659796fecc682716617409350fb5a98e5b7b47558a10d1a2fc7",
+        "bytes": 615477
+      },
+      {
+        "path": "linux-aarch64/_openmp_mutex-4.5-20_gnu.conda",
+        "sha256": "a2527b1d81792a0ccd2c05850960df119c2b6d8f5fdec97f2db7d25dc23b1068",
+        "bytes": 28926
+      },
+      {
+        "path": "linux-aarch64/libgcc-16.2.0-h205dda4_7.conda",
+        "sha256": "eae7a3449d5a3b5351c5427137c076cc3fc826645c7bfc42dc10772b783826f1",
+        "bytes": 627793
+      },
+      {
+        "path": "linux-aarch64/ncurses-6.6-h2b6f883_1.conda",
+        "sha256": "d69a04914139627f0a6bfd19412d6c7f1e37edc896af84a6011e07e8bc1e69fa",
+        "bytes": 955422
+      },
+      {
+        "path": "linux-aarch64/libev-4.33-h80f16a2_3.conda",
+        "sha256": "4475f79a020e9ff2a5a0308c48cb2970a25d55c3dd724a97ab28bfac3be6cd49",
+        "bytes": 45746
+      },
+      {
+        "path": "linux-aarch64/keyutils-1.6.3-h5bc82ec_1.conda",
+        "sha256": "3999b1472f1e549a0b766428e2823abf20626aac5314b474c9b76bf6eb679def",
+        "bytes": 129546
+      },
+      {
+        "path": "linux-aarch64/bzip2-1.0.8-h4777abc_10.conda",
+        "sha256": "24eacc8a20fd7c4616566178562bef7f9344eb4a8700cfc3180fa75a6ff9d39f",
+        "bytes": 194694
+      },
+      {
+        "path": "linux-aarch64/c-ares-1.34.9-h29ee22c_0.conda",
+        "sha256": "76683c88b796b7d72ef5d675e86d3b9959d2af1c78343e9ba2ff041d5029e06d",
+        "bytes": 246798
+      },
+      {
+        "path": "linux-aarch64/libstdcxx-16.2.0-hef695bb_7.conda",
+        "sha256": "b241a3acfa9cdb1359112864a1241225533c92642de3000d52ae65ef5d3a9786",
+        "bytes": 6236630
+      },
+      {
+        "path": "linux-aarch64/libiconv-1.18-h1ea5142_3.conda",
+        "sha256": "d22c666eb887afd2119aac2110e23a0e817e9391bda99293421f7c46dab1564c",
+        "bytes": 785924
+      },
+      {
+        "path": "linux-aarch64/libxcrypt-4.4.38-h80f16a2_0.conda",
+        "sha256": "d3514900e2121972e435f7803763c1843dad6709e48aa02a2b47c4d481f83be7",
+        "bytes": 133882
+      },
+      {
+        "path": "linux-aarch64/libexpat-2.9.0-h4154aff_0.conda",
+        "sha256": "d3327ab1086334309cab3cf533c95f70c44dcbb8f66a99a92b23fb0f3f20f1da",
+        "bytes": 80340
+      },
+      {
+        "path": "linux-aarch64/libedit-3.1.20260512-pl5321hc48eb74_0.conda",
+        "sha256": "58fd637d0219016bb69edf2973b089975de283e8a38149d69ef586b8fc4ad90b",
+        "bytes": 149680
+      },
+      {
+        "path": "linux-aarch64/pcre2-10.49-he574923_0.conda",
+        "sha256": "2c01cc846cfd629ade4792e38e9880266077fc9ffc2c6724016008541893888d",
+        "bytes": 1209693
+      },
+      {
+        "path": "linux-aarch64/icu-79.1-py313h6ffeb17_0.conda",
+        "sha256": "3a9980bb831de258c56d6861fb7bc5aeaadb7cbc143a684b56b1d178dc9a24e9",
+        "bytes": 14885952
+      },
+      {
+        "path": "linux-aarch64/perl-5.44.0-1_h5bc82ec_perl5.conda",
+        "sha256": "7cf91a128068608c731df55e9c452cccb179b84df086ebc95f70797092c55d73",
+        "bytes": 11484751
+      },
+      {
+        "path": "linux-aarch64/libpsl-0.23.1-h37fd031_2.conda",
+        "sha256": "ce9d5d8ab141b55242a4c82f067bbc340fcd0e009218ac30b6d80ee1795666db",
+        "bytes": 73191
+      },
+      {
+        "path": "noarch/ca-certificates-2026.10.23-hbd8a1cb_0.conda",
+        "sha256": "95619b9c1184be7175392eeb0ee7eeb5ccf25d280951f4225f2d62e725790be3",
+        "bytes": 130057
+      },
+      {
+        "path": "linux-aarch64/openssl-3.6.5-he6ad1d5_0.conda",
+        "sha256": "238136f1df197ecd89bafd728a34d0642176f3170423d13d8276746d675a9485",
+        "bytes": 3716078
+      },
+      {
+        "path": "linux-aarch64/libssh2-1.11.1-h7572e3e_1.conda",
+        "sha256": "f6fef76c1c8899d7976030871b8cd8016b0a306d2b8519834cd6491d6a42fb82",
+        "bytes": 315682
+      },
+      {
+        "path": "linux-aarch64/krb5-1.22.2-h095d8e5_2.conda",
+        "sha256": "601d79af94d9562ba70e2d4947034ba159aae293a3c860855335a7c76c14400e",
+        "bytes": 1538590
+      },
+      {
+        "path": "linux-aarch64/libnghttp2-1.71.0-h0d23a54_0.conda",
+        "sha256": "27b87291a76284071088204f8d48023cceea870e9e566eee4d1cddd7b08c4a93",
+        "bytes": 942290
+      },
+      {
+        "path": "linux-aarch64/libcurl-8.23.0-h86273da_0.conda",
+        "sha256": "4a9bc4ef7f6ddaef61a900d360214fb285c6aa474a3d7e1c5e4e42b4b2e36697",
+        "bytes": 529565
+      },
+      {
+        "path": "linux-aarch64/git-2.56.0-pl5440he8b3b7f_1.conda",
+        "sha256": "8030d33d12bf6f8a8a2814ec85a200c64078f7b57731bf0970d3e51702c7de2c",
+        "bytes": 17443186
+      }
+    ]
+  }
+}

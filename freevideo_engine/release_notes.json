@@ -1,0 +1,395 @@
+{
+  "schema": 1,
+  "product_version": "0.6.8",
+  "en": {
+    "summary": "0.6.8 keeps models on the graphics card more often when pictures and videos alternate, has background preparation give the card back sooner when a generation starts, lets results be upscaled from their own menu, makes tutorial chapters searchable from the command palette, and explains more failures.",
+    "changes": [
+      "Fewer reloads when pictures and videos alternate: when only system memory is short, models already on the graphics card are no longer cleared with it; after a picture, the video model returns to the card; when both cannot fit, the one used last stays.",
+      "A new generation gets the graphics card sooner: when Generate is clicked, background compiling and text-encoder preparation stop within seconds and give the card back instead of finishing first.",
+      "Less waiting in the second pass on 8 GB cards: on cards with less video memory, the second pass no longer waits for the processor to join intermediate results; the output is identical.",
+      "Upscale from the result menu: a result's \"⋯\" menu offers \"Upscale to W × H\", the same as the library's right-click menu.",
+      "Search the tutorial from the command palette: while text is typed in the command palette, matching tutorial chapters are listed after the related actions, and choosing one opens that chapter; Chinese and English chapter names and common terms can all be searched.",
+      "Launcher path tip: a folder's full path is shown as a tip only when the path is cut off.",
+      "More failures explain their cause: the prompt model and dubbing say when they fail for lack of disk space; a failure whose cause the engine has stated is no longer shown as an unexplained process exit and gets advice for that cause; on a Mac, using reference media together with first and last frames explains that one of the two has to be kept, and what to do next.",
+      "More accurate LoRA check: step-distillation acceleration LoRAs saved in other layouts are recognized as acceleration LoRAs, and language-model LoRAs are identified as such.",
+      "Edit view details: the title bar is no longer covered by the timeline's drag layers; at phone width the toolbar fits in one row; closing the Edit view clears the \"last edit not found\" notice; the slow-interface notice stays in the notification list until it is closed.",
+      "Reverse prompt: a video clip that yields a single frame can be reverse-prompted."
+    ]
+  },
+  "zh": {
+    "summary": "0.6.8 让图片与视频交替使用时模型更多留在显卡上，开始生成时后台准备工作更快让出显卡；结果菜单可以直接放大，命令面板可以搜索教程章节，更多失败会说明原因。",
+    "changes": [
+      "图片和视频交替使用时更少重复载入：只是电脑内存紧张时，已在显卡上的模型不再被一并清出；图片用完后，视频模型会重新回到显卡；两者放不下时，保留最近使用的一个。",
+      "开始生成更快接手显卡：点击生成时，后台的编译和文本编码器准备会在几秒内停下并让出显卡，不再等它们做完。",
+      "8 GB 显卡第二遍更少等待：显存较小时，第二遍不再等待处理器拼接中间结果，画面与之前完全一致。",
+      "结果菜单可以放大：生成结果的“⋯”菜单中可直接选择“放大到 宽 × 高”，与作品库右键菜单一致。",
+      "命令面板可以搜索教程：在命令面板中输入文字时，匹配的教程章节会列在相关操作之后，选择即可打开该章；中文、英文章节名和常用说法都可搜索。",
+      "启动器路径提示：文件夹路径只在显示不全时才出现完整路径提示。",
+      "更多失败会说明原因：提示词模型和配音因磁盘空间不足失败时会说明；引擎已写明原因的失败不再显示为原因不明的进程退出，并给出对应的处理建议；在 Mac 上同时使用参考素材和首尾帧时，会说明需要保留其中一种，以及下一步怎么做。",
+      "LoRA 检查更准确：以其他方式保存的步数蒸馏加速 LoRA 也能被识别为加速 LoRA；语言模型的 LoRA 会被如实指出。",
+      "剪辑视图细节：标题栏不再被时间线拖动层遮住；手机宽度下工具条完整放在一行；关闭剪辑视图后，“找不到上次的剪辑”提示随之清除；界面变慢的提示会保留在通知列表中，直到手动关闭。",
+      "反推提示词：只取到一帧的视频片段也能正常反推。"
+    ]
+  },
+  "history": [
+    {
+      "product_version": "0.6.7",
+      "en": {
+        "summary": "0.6.7 improves prompt enhancement for MOSS-Image, lets merged videos be upscaled, offers lossless sound on export, gives videos, audio and dropdowns FreeVideo's own play bar and menu, makes the Edit view smoother, explains more failures, and cleans up more thoroughly when a work is deleted.",
+        "changes": [
+          "Prompt enhancement for MOSS-Image: with MOSS-Image, prompts are enhanced the way Qwen-Image's are; when the service refuses an enhancement request, the cause is named.",
+          "Prompt enhancement is steadier on smaller graphics cards: on cards with less video memory, such as 8 GB, enhancing a prompt no longer fails for lack of video memory.",
+          "Steadier use of Qwen-Image and MOSS-Image together: on a 12 GB card, making a picture with Qwen-Image and then switching to MOSS-Image no longer fails for lack of memory.",
+          "Upscale takes merged videos: a merged video can be upscaled to the largest size, and a video that cannot be enlarged says why.",
+          "Sound format on export: the export window adds a Sound option beside the frame rate, Compatible or Lossless. Lossless exports a .mov with uncompressed sound; it is not available with Audio only or for a range without sound.",
+          "One play bar and one menu: videos and audio use FreeVideo's own play bar, where a click plays or pauses a video and long audio and video can be dragged to any point; every dropdown in FreeVideo pages opens the FreeVideo menu instead of the system list.",
+          "A smoother Edit view: the preview has more room, the Media, LoRA and Advanced windows are no longer covered by the timeline, the buttons stay on one line in a narrow window, and Escape during a replace-audio step cancels only the replacement.",
+          "Over-long prompts are explained first: in the Image view and the Edit view, a prompt over the engine's limit says by how much before it is submitted, instead of being refused afterwards.",
+          "More failures explain what happened: a picture failure names the step where it failed, and a picture moved or deleted in the Edit view is named with a way to import it again.",
+          "More accurate graphics card notices: the laptop GeForce RTX 2050 is no longer listed as an unsupported card, and an old driver shows the driver update notice.",
+          "Steadier on a Mac with tight memory: when a Mac runs short of memory midway, generation retries once in a way that uses less memory instead of stopping.",
+          "Cleaner deletion: related traces in pictures, uploads, thumbnails and logs are removed, and deleted videos no longer appear in the finished-task record."
+        ]
+      },
+      "zh": {
+        "summary": "0.6.7 改进 MOSS-Image 的提示词增强，合并后的视频可以放大，导出可选无损声音；播放条和下拉菜单统一为 FreeVideo 自己的样式，剪辑视图更顺手，更多失败会说明原因，删除作品时清理得更干净。",
+        "changes": [
+          "提示词增强适配 MOSS-Image：使用 MOSS-Image 时，提示词按 Qwen-Image 的改写方式增强；改写请求被服务拒绝时，会说明原因。",
+          "提示词增强在显存较小的显卡上更稳：在 8 GB 等显存较小的显卡上，提示词增强不再因显存不足而失败。",
+          "先后使用 Qwen-Image 和 MOSS-Image 更稳：12 GB 显存的显卡上，先用 Qwen-Image 出图再换 MOSS-Image，不再因内存不足而失败。",
+          "视频放大支持合并后的视频：合并后的视频可以放大到最大尺寸；无法放大的视频会说明原因。",
+          "导出可选声音格式：导出窗口在帧率旁新增“声音”选项，可选“通用”或“无损”。选择“无损”时导出为 .mov 文件，声音不压缩；内容选“只声音”或所选范围没有声音时不可选。",
+          "播放条和下拉菜单统一：视频和音频使用 FreeVideo 自己的播放条，点击视频即可播放或暂停，长音频和视频可拖动进度；页面中的所有下拉选择都使用 FreeVideo 菜单，不再弹出系统列表。",
+          "剪辑视图更顺手：预览更宽敞，“素材”“LoRA”“高级选项”窗口不再被时间线遮住，窄窗口下按钮保持在一行，替换声音时按 Esc 只取消替换。",
+          "提示词过长时先说明：图像视图和剪辑视图中，超过引擎限制的提示词在提交前就会提示超出多少，不再提交后才被拒绝。",
+          "更多失败会说明原因：图片失败会指出出错的步骤；剪辑中的图片被移动或删除时，会说明并给出重新导入的办法。",
+          "显卡提示更准确：笔记本 GeForce RTX 2050 不再被列为不支持的显卡，驱动过旧时会显示更新驱动的提示。",
+          "Mac 内存紧张时更稳：Mac 生成中途内存不足时，会自动换一种更省内存的方式重试一次，不再直接停止。",
+          "删除作品清理更干净：图片、上传文件、缩略图和日志中的相关残留一并清除，已删除的视频不再出现在已完成任务记录中。"
+        ]
+      },
+      "important": true
+    },
+    {
+      "product_version": "0.6.6",
+      "en": {
+        "summary": "0.6.6 gives more control over MOSS-Image pictures and makes them faster on smaller graphics cards, lets a reference video lend only its layout, explains more failures with a next step, and makes the Edit view easier to use in narrow windows and view switches smoother on slower computers.",
+        "changes": [
+          "More control over picture layout: draw boxes with Layout in the Image view and give each one a line of description to place each part of the picture. Words in quotation marks are written into the picture.",
+          "MOSS-Image is faster on smaller graphics cards: a 1024-pixel picture on a 12 GB card is made much faster, with exactly the same result as before.",
+          "A reference video can lend only its layout: with Composition only, the new video follows the layout of the reference video, not its motion or colours.",
+          "Original sound plays on phones: an MP3 used as the original sound stays an MP3 in the finished video, so phones and system players can play it.",
+          "Frames saved in the Edit view also go to the output folder: with Also save pictures to the output folder on in Settings, a frame saved in the Edit view is copied there as well.",
+          "More failures explain what happened and what to do next, including a task that gets no answer after it is submitted, a picture the assistant cannot start and a Git error during setup.",
+          "Smoother on slower computers: with fewer processor cores or slow view switches, FreeVideo turns off the switch animation, and the library and short clips play more smoothly.",
+          "The Edit view is easier to use in a narrow window: the preview and buttons no longer cover each other, and the tracks and the update bar are shown in full.",
+          "Dialogs and tips are easier to read: their text is no longer disturbed by what lies behind them, and a hover tip appears only when a name is cut short.",
+          "Fields are easier to fill in: a number typed outside its range is brought back into range with a note under the field. An emptied LoRA strength returns to the strength in use.",
+          "Tutorial additions: how to export at 48 or 60 fps, and how to use MOSS-Image layout boxes."
+        ]
+      },
+      "zh": {
+        "summary": "0.6.6 让 MOSS-Image 出图更可控，在显存较小的显卡上也更快；参考视频可以只沿用构图；更多失败会说明原因和下一步；窄窗口下的剪辑视图和低配电脑上的视图切换更顺畅。",
+        "changes": [
+          "图片构图更可控：在图像视图中用“布局”画框，并为每个框写一句描述，即可指定画面中各部分的位置。引号中的文字会直接写进画面。",
+          "MOSS-Image 在显存较小的显卡上更快：12 GB 显卡生成 1024 像素的图片明显加快，画面与之前完全相同。",
+          "参考视频可以只沿用构图：选择“仅参考构图”时，生成的视频沿用参考视频的构图，不沿用其动作和颜色。",
+          "MP3 原声可在手机上直接播放：作为原声的 MP3 在成片中保持原样，手机和系统播放器均可直接播放。",
+          "剪辑视图保存的画面也会存入 output 文件夹：开启设置中的“同时将图片保存到 output 文件夹”后，在剪辑视图中保存的画面同样会复制到 output 文件夹。",
+          "更多失败会说明原因和下一步：任务提交后无应答、助手请求的图片无法开始、安装时 Git 出错，都会说明发生了什么以及接下来该怎么做。",
+          "低配电脑上更流畅：处理器核心较少或视图切换较慢时，FreeVideo 会自动关闭切换动画，作品库和短视频播放更加顺畅。",
+          "窄窗口下的剪辑视图更易用：预览与按钮不再互相遮挡，轨道和更新栏均完整显示。",
+          "对话框和提示更易阅读：对话框与提示的文字不再受背景内容干扰，悬停提示只在名称显示不全时出现。",
+          "输入更省心：数字框中输入超出范围的值时，会自动改回范围内并给出提示。清空 LoRA 强度后，会恢复为正在使用的强度。",
+          "教程补充：新增导出 48 或 60 fps 视频的方法，以及 MOSS-Image 布局框的用法。"
+        ]
+      }
+    },
+    {
+      "product_version": "0.6.5",
+      "en": {
+        "summary": "Image model downloads no longer pause while the image view only warms a model; export supports 48 and 60 fps; pictures are also saved to the output folder; LoRA choice uses FreeVideo's own menu; and face close-ups and failure messages are improved.",
+        "changes": [
+          "Image models: a download no longer pauses as if a video were generating when the image view only keeps or warms a model, a paused download says why, and Continue download starts it at once; a model folder or its files may be symbolic links (junctions on Windows) to another drive; a link that leads nowhere or to a damaged or different file says why and what to do next, and only that model fails; MOSS-Image warms up from its own files and renders normally on Windows with less than 24 GB of video memory; and when opened from ComfyUI, H3 Image allocates GPU memory as video generation does.",
+          "Export at 48 or 60 fps: Frame rate in the Export window now offers 48 and 60, with the frames in between made on the graphics card, cuts and still frames kept as they are and the sound copied unchanged; a full disk is reported as a full disk, and plainly too little space is said before the graphics card starts.",
+          "Face pictures of a character after a change of clothes: a Face picture framed too wide is redrawn larger once, a repaint that kept the old clothes is tried again, and when no face box is found the clothes are repainted inside a fixed area.",
+          "Pictures and seeds: each picture made or imported is also copied into the output folder as a file of its own, removed when the picture is deleted for good and switchable off in Settings; the dice next to Seed in the Image view fills in a random seed, and an empty Seed still draws a new one each time.",
+          "Choosing a LoRA: the LoRA choice opens FreeVideo's own menu, where a long list scrolls, typing filters it, LoRAs are grouped by folder and the keyboard works, in the dark and light themes and in narrow windows.",
+          "Failures say why and what to do next, continued: in the Edit view, the Image view, the Create panel, the generation progress card and notifications a failure states the cause and the next step and offers Report a problem, never a raw failure code; an engine stop, a failed model download and a video closed from its history name their reason, and a full disk during a download is named; a LoRA that stores one alpha for layers of different ranks is marked unusable before generation with the reason; an out-of-range picture setting is named.",
+          "Report a problem: for a known failure with a clear fix, that fix is shown first and the report can still be sent after it; the issue text the launcher fills in starts with the display adapter model for every kind of error.",
+          "Edit view subtitles: when the subtitle track holds only an empty line just added, Auto subtitles places the lines it heard without saying they replaced the subtitles there; when the lines there have words, the notice and its Undo are as before."
+        ]
+      },
+      "zh": {
+        "summary": "图像模型下载不再在预热时误停；导出支持 48 和 60 fps；图片同时保存到 output 文件夹；LoRA 选择改用 FreeVideo 自己的菜单，脸部特写与失败说明更完善。",
+        "changes": [
+          "图像模型：图像视图只是预热或保留模型时，图像模型下载不再以“视频生成中”暂停，暂停时写明实际原因，可用“继续下载”立即开始；模型文件夹、其子文件夹或模型文件通过符号链接（Windows 上也可用目录联接）放在其他磁盘时照常使用，链接失效或指向损坏、不同的文件时说明原因和下一步，图片页只把该模型标为出错；MOSS-Image 预热只读取自己的模型文件，Windows 上显存小于 24 GB 时可以正常出图；由 ComfyUI 打开时，H3 Image 使用与视频生成相同的显存分配方式。",
+          "导出 48 或 60 fps：导出窗口的“帧率”新增 48 和 60，中间帧在显卡上补出，剪切处和静止画面保持原样，声音原样复制；磁盘写满时直接说明磁盘已满，空间明显不足时在显卡开始工作前就会提示。",
+          "角色更换服装后的脸部特写：脸部特写取景过宽时放大重画一次；重画后仍是原来的衣服时自动重试；识别不到脸部位置时，在固定区域内重画衣服。",
+          "图片保存与种子：生成或导入的图片同时复制一份到 output 文件夹，副本是独立文件，图片永久删除时一并删除，可在设置中关闭；图像视图种子旁的骰子会填入一个随机种子，留空时仍每次随机。",
+          "LoRA 选择：选择 LoRA 时打开 FreeVideo 自己的菜单，长列表可以滚动，输入文字即可筛选，按文件夹分组，可用键盘操作，深色、浅色主题和窄窗口下都能正常使用。",
+          "失败时说明原因和下一步（续）：剪辑视图、图像视图、创作面板、生成进度卡片和通知中的失败都写明原因和下一步并可提交问题，不再显示原始错误代码；引擎停止、模型下载失败、从历史中关闭的视频也说明原因，下载时磁盘已满会直接说明；同一个 alpha 对应不同秩的 LoRA 在生成前即标为不可用并说明原因；图片设置超出范围时分别说明是哪一项。",
+          "提交问题：已知错误且已有明确建议时，先显示该建议，看完仍可继续提交；启动器预填的问题正文对各类错误都以显示适配器型号开头。",
+          "剪辑视图的字幕：字幕轨上只有刚添加的空字幕时，自动字幕直接写入识别结果，不再提示“识别出的字幕已替换原有字幕”；原有字幕带文字时，提示与“撤销”照旧。"
+        ]
+      }
+    },
+    {
+      "product_version": "0.6.4",
+      "en": {
+        "summary": "Fixes the error MOSS-Image could end with when making a picture; Creations can upscale a video to 4K; first and last frames can be used together with reference pictures; failures explain more; and the Edit view and the launcher have several improvements.",
+        "changes": [
+          "Images: MOSS-Image makes pictures again; in 0.6.3 it could end with an error instead; when memory is tight, H3 Image loads its model fresh instead of keeping it and then giving it back; while the engine is busy, a picture from Generate with AI in Edit image waits in line and starts once the previous job ends instead of being refused, and each retry uploads its reference pictures again.",
+          "Creations can upscale a finished 24 fps video by 1.5x or to 4K (3840 wide): the More menu offers it where this computer can generate that size and length, and the picture is kept while the video's own sound is used as it is.",
+          "Failures give the cause and next step, with the original text in the details: a reference video that cannot become depth, an unfinished assistant or Autopilot task, a failed start from the ComfyUI menu, a failed update, long-video failures, a redo or continue not starting, a delete in Creations blocked by a busy file, no permission or a full disk, and the command palette and phone connection; a failed save says Save failed with the server's words, or that the connection dropped; a narrow window shows the whole failure card; Report a problem on a failure card in the Image view looks like Retry.",
+          "Deletion and records are cleaner: deleting a picture for good also removes its prompt from the video prompt history, while a prompt another picture or video still uses stays; managed ComfyUI keeps no workflow drafts in the browser; and the record of finished jobs keeps only ids, short codes and times, never the error text.",
+          "Edit view generation bar: the frame pop-up shows the first-frame reference switch and saves it with the edit's own setting; choosing parts apart on the timeline no longer breaks the bar; on a narrow window Generate stays inside the bar instead of falling under the track toolbar; a blank edit takes the quality level chosen in the creation panel while the editor was away, and a saved edit or one with parts keeps its own.",
+          "Edit view timeline and panel: Ctrl+wheel zoom keeps the time under the pointer in place; with a part that is not generated yet selected, the side panel says it can be adjusted once generated; and a hidden editor no longer reads its import list every 2 seconds, reading it at once when shown again.",
+          "Settings improvements: a model folder that was not found is shown on one line at any width, its start giving way with an ellipsis and its last folder whole, and a copy takes the whole path; a save that fails after Settings was closed is shown as a failure notice with a way back to that setting.",
+          "Launcher and installation: the release-notes button under the notes in the update window wraps at the window's width; the desktop shortcut of a source installation starts the launcher directly; failures in the launcher, installation, downloads and the offline package state the cause, the next step and how to report them; and when another program holds a file that an update or a package installation needs, FreeVideo waits and installs again before reporting an error.",
+          "Creations and menus: Creations opened over a view keeps the keyboard after its opening fade, so Escape and the arrows work at once; the Info item of a creation's menu shows an information mark instead of the warning triangle; and the undo bar and the selection bar at the bottom of Creations are fully opaque, so thumbnails no longer show through at phone width.",
+          "At phone width: an attached picture's remove button in Autopilot keeps its corner size, so tapping a picture that failed to upload retries it instead of removing it; and the phone connection panel sits right below its button, aligned to its right edge and at least 8 pixels from the screen edge.",
+          "Tutorial improvements: after Get started on the featured example the caret is in the Autopilot box, also when the box turns on a moment after the view opens; the System status steps and pictures follow the top bar's status and its Run status panel; and the tutorial book's pictures and text follow the redesigned panels, with Edit view pictures matching the borrowed generation bar, continuing a part adding pictures from Media, and the save-frame notice naming Works.",
+          "First, last and middle frames work together with reference pictures and videos: one generation can use keyframes and references at the same time, and the guide and the tutorial book say so; length and time estimates count each keyframe as one canvas of the size being made."
+        ]
+      },
+      "zh": {
+        "summary": "修复 MOSS-Image 出图报错；作品库可将视频放大到 4K，首帧、尾帧可与参考图同用，失败说明更完整，剪辑视图与启动器多项改进。",
+        "changes": [
+          "图像：修复 0.6.3 中 MOSS-Image 出图时报错的问题；内存紧张时，H3 Image 直接重新载入模型，不再先保留、随后又释放；引擎忙时，编辑图片中的 AI 生成排队等候，前一项完成后自动开始，不再直接拒绝，每次重试都重新上传参考图。",
+          "已完成的 24 fps 视频可在作品库放大 1.5 倍或放大到 4K（3840 宽）：本机能生成该尺寸与时长时，“更多”菜单提供这一项；画面保留，视频原有的声音照原样使用。",
+          "失败时说明原因和下一步（续），原文保留在详情中：仅深度参考视频无法转成深度、助手或 AI 全自动任务未完成、从 ComfyUI 菜单打开失败、更新失败、长视频失败、重做或续接未开始、作品库删除遇到文件占用、无权限或磁盘已满，以及命令面板和手机连接；保存失败写“保存失败”并接服务器原话，连接断开时直接说明；窄窗口里画面上的失败卡完整显示；图像视图失败卡上的“提交问题”与“重试”样式一致。",
+          "删除与记录更干净：彻底删除图片时，它的提示词也从视频提示词历史中清除；其他图片或视频仍在使用的提示词保留；受管理的 ComfyUI 不再在浏览器中保存工作流草稿；已完成任务的记录只保留编号、短代码和时间，不含错误文本。",
+          "剪辑视图的生成栏：帧弹层中显示首帧参考开关，并按所编辑的这一段自己的设置保存；在时间线上分开选取多段时，生成栏不再失效；窄窗下“生成”保持在栏内，不再落到轨道工具栏之下；空白的剪辑沿用离开期间创作面板所选的质量，已保存或已有分段的剪辑保留自己的质量。",
+          "剪辑视图的时间线与面板：Ctrl+滚轮缩放时，指针下的时间点保持不动；未生成的分段被选中时，右侧面板说明“生成后可调整”；暂时离开的剪辑视图不再每 2 秒读取导入列表，回来时立即读取。",
+          "设置改进：找不到的模型文件夹在任何宽度下显示为一行，开头以省略号让位、末级文件夹完整，复制时取完整路径；设置关闭后才失败的保存会以失败提示显示，并可一键回到该设置。",
+          "启动器与安装：更新窗口中说明下方的按钮按窗口宽度换行；源码安装的桌面快捷方式直接打开启动器；启动器、安装、下载与离线包的失败写明原因、下一步和报告方式；更新或安装软件包时遇其他程序占用文件，会等待并重新安装，再报告错误。",
+          "作品库与菜单：在其他视图上方打开作品库后，淡入结束即获得键盘焦点，Esc 与方向键立即可用；“作品”菜单中的“信息”项显示信息图标，不再显示警告三角；作品库底部的撤销条和“已选”操作条完全不透明，手机宽度下不再透出缩略图。",
+          "手机宽度的显示：AI 全自动中附加图片的移除按钮保持原有角标大小，点按上传失败的图片时是重试，而不是移除；手机连接面板在入口正下方、右边对齐，离屏幕边至少 8 像素。",
+          "教程改进：精选示例点“开始使用”后，光标位于 AI 全自动输入框，输入框稍后才打开时也一样；“运行状态”教程的步骤与图片跟随顶栏状态及其运行状态面板；教程书的图文跟随改版后的面板，剪辑视图的图片对应借用的生成栏，续接一段时从“素材”添加图片，保存帧的提示写明“作品库”。",
+          "首帧、尾帧与中间帧可与参考图、参考视频同用：同一次生成中可以同时使用关键帧和参考图、参考视频，使用说明与教程书已相应更新；长度与时间估算按每个关键帧一张同尺寸画布计算。"
+        ]
+      }
+    },
+    {
+      "product_version": "0.6.3",
+      "en": {
+        "summary": "Image generation adds the MOSS-Image model, failures state the cause and the next step, touch and portrait screens are improved, and a number of problems are fixed.",
+        "changes": [
+          "Image generation adds the MOSS-Image model, installed in one click, and better queueing and model loading: several pictures can wait in line and the status shows the place; models that made room for another program load again once the room is free; opening the image view loads the image model where it fits; when another program holds the graphics card, H3 Image plans against the memory actually free and no longer runs short at the first step; and the second-pass upscale no longer reloads the video model when memory suffices, so the wait is shorter.",
+          "Failures say why and what to do next: a launcher crash, an incomplete installation file, a failed model upgrade, an unfinished assistant task, a ComfyUI start failure, an unreadable folder or undeletable video in the library or when sharing, a prompt rewrite cancelled before generation, release notes that cannot be loaded, a tutorial example that cannot be filled in, and a stopped FreeVideo on this computer each state the cause and the next step instead of a raw error or no response. When an update fails, both buttons sit under the reason, and a full disk comes with the step to free space.",
+          "The computer stays awake while a video is made: Windows and Linux no longer go to sleep on their own during generation, except on battery.",
+          "Touch and portrait screen improvements: actions that a mouse reveals on hover are shown on touch screens; tall portrait windows use their full height; on touch screens wider than a phone the editor's and the image view's controls are larger and top-bar links and number steppers have larger tap areas; on a phone Creations in the top bar opens the works without a second entry under the picture; on a narrow screen Generate and Cancel stay whole and easy to tap; and the phone page no longer comes up blank when opened over the local network or a remote link.",
+          "The library opens the folder that holds the videos: a Video folder button, and Show in folder for every video; when the folder cannot be opened, the reason is stated.",
+          "The creation panel and the editor share one generation bar: the editor uses the same description, size, length and quality settings as the creation panel, prefilled for the work; the description box grows with its text; a cleared length, width or height stays empty, and Generate names the value to fill in and opens that field; the empty-description check sits right above Generate and the progress word is no longer cut short; with audio used as it is, a lock before the length says on hover or tap why it is fixed; and the creation panel no longer flickers at certain window widths.",
+          "Your own pictures for a new character: each of the four views takes a picture of your own, and Generate fills only the views still empty.",
+          "Image editor and library improvements: on a narrow screen every tool's options fit and the rest go under More; after a batch delete, Escape still leaves selecting and the next delete removes only the works picked then; a failed library read clears the loading placeholders and offers Retry before Report a problem; the recent-works strip on the creation page states the reason when it cannot be read and can be read again; in the image view a failure card keeps its reason line and buttons in place when reporting is unavailable, and every reference picture shows its number in full.",
+          "Assistant improvements: audio can be used as it is to continue a saved video, Tab stays inside the drawer and dialogs and a deleted chat stays gone, and the connection light opens a menu whose main action is Reconnect.",
+          "Deletion removes more related records: deleting a work also removes its report number from the report index, managed ComfyUI keeps no file names in its logs, with old run folders pruned, and stopping the image editor while reference pictures are uploading removes the ones already sent at once.",
+          "Fixes: after a continued part finishes, the next part is ready as on opening the work; the editor writes only what changes as the playhead moves; remote visits load faster; cards below the minimum show as unsupported; model download continues when the mount table is unreadable; the launcher reads the set card number by CUDA's rules and names it if unmatched; launcher notices change language with the interface; long labels in the update notes fit a narrow launcher window; editor exports leave out unsent planned parts; a second pass that fails to start shows its error in the tooltip and report.",
+          "Editor improvements: the top-bar tabs stay in place and keep focus when the editor opens; menus close with Escape and move with the arrow keys; on a narrow screen the Subtitles track name fits and the project menu opens below the name; jumping with the arrow keys keeps the playhead in view, and near 0 s the playhead handle no longer covers the track header; Escape stops a drag without adding an undo step; menus, floating panels, the Fill/Fit switch and a failed part's card are solid; and leaving the editor stops a media preview, and late previews or clips no longer land in the hidden editor."
+        ]
+      },
+      "zh": {
+        "summary": "图片生成新增 MOSS-Image 模型，失败时说明原因和下一步，触屏与竖屏显示改进，并修复了多项问题。",
+        "changes": [
+          "图片生成新增 MOSS-Image 模型，可一键安装；排队与模型载入改进：可同时排队多张图片，状态显示排队位置；为其他程序让出显存的模型在空间恢复后重新载入；打开图像视图时，显存够用就载入图像模型；显卡被其他程序占用时，H3 Image 按实际空闲显存安排，不再在第一步显存不足；二采放大时，显存足够则不再重新载入视频模型，等待更短。",
+          "失败时说明原因和下一步：启动器意外退出、安装文件不完整、模型升级失败、助手任务未完成、ComfyUI 启动失败、作品库与分享中无法读取的文件夹或无法删除的视频、生成前被取消的提示词改写、更新说明读取不到、教程示例无法填入、本机上的 FreeVideo 已停止，都写明原因和下一步，不再显示原始错误行或没有反应。更新失败时，两个按钮排在原因下方；磁盘空间不足时提示清理后重试。",
+          "生成视频时电脑不再自行睡眠：Windows 与 Linux 在制作视频期间不会自动进入睡眠；使用电池时不启用。",
+          "触屏与竖屏显示改进：触屏上显示原本要鼠标悬停才出现的操作；竖屏窗口使用全部高度；比手机宽的触屏上，剪辑视图和图像视图的按键加大，顶栏链接和数值调节按钮的点按范围也加大，更易点中；手机上从顶栏的“作品库”进入作品，画面下方不再重复显示入口；窄屏下生成与取消按钮保持完整、易于点按；通过局域网或远程链接打开手机页时不再空白。",
+          "作品库可直接打开视频所在文件夹：新增“视频文件夹”按钮，每个视频都能“在文件夹中显示”；无法打开时说明原因。",
+          "创作面板与剪辑视图使用同一个生成栏：剪辑视图里的生成栏使用与创作面板相同的描述、尺寸、时长和质量设置，并按当前作品预填；描述框随文字增高；清空的时长、宽、高保持为空，点击生成时提示需填写的项并打开该项；描述为空时的确认提示显示在“生成”正上方，进度词不再被截断；音频原样使用时，时长前的锁形图标在悬停或点按时说明时长为何固定；创作面板在各种窗口宽度下都不再闪动。",
+          "新建角色时可上传自己的四个视角图片，生成只补还空着的视角。",
+          "图片编辑与作品库改进：窄屏下每个工具的选项都能完整显示，其余收入“更多”；批量删除后，按 Esc 仍可退出选择，下次删除只删除当时选中的作品；作品库读取失败时清除加载占位，并在“提交问题”前提供“重试”；创作页的最近作品栏读取失败时也说明原因，可重新读取；图像视图的失败卡在报告不可用时，原因行和按钮不再左移，参考图每张都完整显示编号。",
+          "AI 助手改进：音频可原样用于续接已保存的视频；Tab 键停留在抽屉和对话框内，已删除的对话不再出现；连接指示灯可打开菜单，主要操作为“重新连接”。",
+          "删除时清除更多相关记录：删除作品时，其报告编号也从报告索引中移除；受管理的 ComfyUI 日志不再记录文件名，旧的运行目录会被清理；图片编辑中途停止时，已上传的参考图立即从服务器删除。",
+          "问题修复：续接的一段生成完成后，下一段与打开作品时一样就绪；剪辑视图在播放头移动时只写入变化的内容；远程访问时页面加载更快；低于最低配置的显卡一律显示为不支持；模型下载在无法读取挂载表时仍可继续；启动器按 CUDA 的规则读取所设的显卡序号，对不上时说明所设的值；切换界面语言时，已显示的启动器提示一并换语言；启动器窗口较窄时，更新说明里的长标签不再超出窗口；剪辑导出时不再包含从未发送的计划段；二采未能开始时，提示与报告写明错误。",
+          "剪辑视图改进：打开剪辑视图时顶栏标签保持原位、焦点不丢失；菜单可用 Esc 关闭、用方向键切换选项；窄屏下轨道名“Subtitles”完整显示，项目菜单在名字下方打开；用方向键跳转时播放线保持在可见范围内，靠近 0 秒时播放头把手不盖住轨道头；拖动中按 Esc 停止拖动，不多出一步撤销；菜单与浮动面板、画面上的“铺满／完整显示”切换和失败段的说明卡改为实色；离开剪辑视图后素材预览不再出声，晚到的预览和素材不会写进隐藏的剪辑。"
+        ]
+      }
+    },
+    {
+      "product_version": "0.6.2",
+      "en": {
+        "summary": "ComfyUI opened by other means is no longer affected, the Creations entry is always shown, deleting a work also removes the data only it used, and more creation options are available.",
+        "changes": [
+          "ComfyUI no longer affected: ComfyUI opened other than from the launcher no longer shows FreeVideo notices or a FreeVideo backdrop; FreeVideo opens only from the launcher.",
+          "Creations entry always shown: every view has a Creations entry at the top right, and the works strip no longer hides on wide screens.",
+          "Deletion removes related data: deleting a work, edit, conversation, character or film also deletes the prompts, uploads, imports, voiceovers and stems used only by it, and its prompt no longer appears in the history or the search; every AI-generated picture is kept as a work in the library.",
+          "Smooth interface during playback: playing a video in Create no longer slows the interface over time.",
+          "Second pass from the library: Run second pass is available from the card menu and the detail view and continues a preview result with the same settings.",
+          "Improved mannequin poses: the 3D mannequin in the image editor poses more naturally, with thicker line art and prompts that describe the pose in plain language.",
+          "Panning zoomed pictures: a zoomed picture can be dragged in any direction and stops at its edges.",
+          "More creation options: a 21:9 frame preset and other shapes, five size steps for quick preview (0.5M-2M), and multi-line prompts that create one work per line.",
+          "Compatibility view: solid panels, fewer animations and no autoplay, with a one-time notice when the interface runs slowly.",
+          "Failures state the cause and the next step: an unexpectedly ended generation process, an editor save error, a failed second pass and a length the device cannot produce each state the cause and the next step.",
+          "Fixes: a first part shown on its own is kept after a long video is joined to it; on a Mac the picture view uses only the models available on that computer and states clearly when the model list cannot be fetched or is being verified; the launcher no longer stops responding when the update window is very narrow.",
+          "Thumbnails first over a link: when works are opened over a link, thumbnails are shown first, followed by the videos and pictures one at a time."
+        ]
+      },
+      "zh": {
+        "summary": "其他方式打开的 ComfyUI 不再受影响，作品库入口常驻，删除作品时一并删除其专用数据，并增加了创作选项。",
+        "changes": [
+          "不再影响 ComfyUI：从启动器以外的方式打开 ComfyUI 时，不再显示 FreeVideo 的提示和背景；仅从启动器打开时进入 FreeVideo。",
+          "作品库入口常驻：各视图右上角均提供“作品库”入口，宽屏下作品条不再隐藏。",
+          "删除时清除相关数据：删除作品、剪辑、对话、角色或影片时，仅由其使用的提示词、上传文件、导入素材、配音和分轨一并删除，历史提示词和搜索结果中也不再出现；所有 AI 生成的图片均作为作品保存在作品库中。",
+          "视频播放时界面保持流畅：在创作页播放视频时，界面不再随时间变慢。",
+          "作品库支持运行第二遍：作品卡片菜单和详情页均可“运行第二遍”，沿用同一组设置继续处理预览结果。",
+          "人偶姿势改进：图像编辑中的 3D 人偶姿势更自然，线稿笔画加粗，提示词以平实的语言描述姿势。",
+          "放大图片可拖动查看：放大后的图片可向任意方向拖动，到达边缘时停止。",
+          "创作选项增加：新增 21:9 等画幅；快速预览提供五档尺寸（0.5M–2M）；支持一次输入多行描述，每行生成一个作品。",
+          "兼容界面模式：面板改为实心，减少动画，不自动播放；界面运行变慢时提示一次。",
+          "失败时说明原因和处理方法：生成进程意外结束、剪辑保存出错、第二遍失败，以及设备无法生成所选时长时，均会说明原因和下一步操作。",
+          "问题修复：长视频拼接后，单独显示的第一段一采结果不再丢失；Mac 上图片视图仅使用本机可用的模型，无法获取模型列表或正在校验时会明确提示；更新窗口很窄时启动器不再停止响应。",
+          "远程查看时优先加载缩略图：通过链接查看作品时，先显示缩略图，再依次加载视频和图片。"
+        ]
+      }
+    },
+    {
+      "product_version": "0.6.1",
+      "en": {
+        "summary": "Fixes ComfyUI being taken over and image failures without explanation, and makes character creation and image generation better.",
+        "changes": [
+          "ComfyUI is no longer taken over: only the FreeVideo launcher opens FreeVideo, and ComfyUI opened any other way stays as it is.",
+          "Image failures explain themselves: the reason and the next step are shown, with export report and open issue, and a new request now waits for the image in progress instead of failing.",
+          "Image view: the left panel is no longer cut off in Chinese, and the \"Clear\" button under the prompt is gone.",
+          "Calmer background: it no longer flickers while playing or switching and its colour is softer; the update notice can be closed and returns next time.",
+          "Better character creation: outfits from a description or a clothing picture are applied more reliably, including the face close-up; side and back views no longer show a grid; photo, uploaded picture and AI all give a face close-up, front, side and back view, each editable.",
+          "Faster pictures on graphics cards with more video memory.",
+          "Photos the right way up: phone photos used as references keep their orientation, and region edits at another size no longer fail.",
+          "Export report: saving over an existing file now works.",
+          "Compatibility: other CUDA or cuDNN copies on the system no longer load the wrong libraries; the launcher says clearly when no NVIDIA driver is found; Linux installs need less disk space.",
+          "Editing: undo still works after a generation, and unsaved changes are kept when switching views.",
+          "Model installs: verification shows \"Verifying\" with real progress.",
+          "Also: the creative panel's buttons wrap in narrow windows instead of scrolling out of sight, the quality slider follows the pointer more closely, and clothing options and LoRA share one row when creating a character."
+        ]
+      },
+      "zh": {
+        "summary": "修复了打开 ComfyUI 被接管、出图失败没有提示等问题，角色创建和出图更好用。",
+        "changes": [
+          "ComfyUI 不再被接管：只有从 FreeVideo 启动器打开才进入 FreeVideo，其他方式打开的 ComfyUI 保持原样。",
+          "出图失败说清原因：显示原因和下一步，可以导出报告、提交问题；有图片正在生成时，新的请求会排队，不再直接失败。",
+          "图像视图：中文界面下左栏不再被切掉，提示词下去掉了“清空”键。",
+          "背景更舒服：播放和切换时背景不再闪烁，颜色更柔和；更新提示可以关闭，下次打开再提醒。",
+          "角色创建更好用：按描述或服装图换衣更准，脸部特写也换上新衣服；侧面和背面不再有网格纹；照片、上传图片、AI 生成都能得到脸部特写、正面、侧面、背面，每张可单独编辑。",
+          "出图更快：显存较大的显卡上出图更快。",
+          "照片方向正确：手机拍的照片作参考时按正确方向使用；局部编辑换了尺寸也不再失败。",
+          "导出报告：覆盖已有的同名文件时也能正常保存。",
+          "兼容性：系统里装有其他 CUDA 或 cuDNN 时不再加载错误的库；找不到 NVIDIA 驱动时启动器给出明确提示；Linux 安装需要的磁盘空间更少。",
+          "剪辑：生成之后仍可撤销，切换视图时未保存的修改会保留。",
+          "模型安装：安装校验时显示“正在校验”和真实进度。",
+          "其他：窄窗口下创作面板的按钮会换行，不再滑出视野；质量滑块拖动更跟手；新建角色时服装选项和 LoRA 在同一行。"
+        ]
+      }
+    },
+    {
+      "product_version": "0.6.0",
+      "en": {
+        "summary": "The new interface is friendlier, smoother and more modern, and privacy protection is stronger.",
+        "changes": [
+          "New interface: friendlier, smoother and more modern. Every running and queued video and picture can be seen and managed from any page. Generation keeps running when you switch pages, and your half-written prompt and reference pictures stay in place. Earlier videos can serve as references, and first and last frames can be picked straight from your works. A light theme is also available.",
+          "Stronger privacy: deleting a work also deletes its uploaded pictures and prompts, and downloads and shares leave out the prompt by default.",
+          "Image generation with more control: LoRA is supported, and hand-drawn sketches give finer control over the result. A picture deleted by mistake can be recovered from Recently deleted.",
+          "Characters from a photo: one photo makes a character card with front, side and back views.",
+          "Editor: the microphone is turned off automatically when you leave the editor, what has been recorded is kept when you stop with Esc, and export defaults to the full video at high quality.",
+          "Works library: works can be viewed and played properly even in a narrow window.",
+          "More reliable Mac installation: fixes an issue that kept the installation from completing on some Macs.",
+          "More reliable generation: prompt enhancement fails less often on 12 GB graphics cards, and graphics cards with little memory generate pictures normally.",
+          "Download and launcher: a video that cannot be downloaded now says so, and the launcher starts normally even if its saved template is missing or damaged.",
+          "Built-in director and agent tools: the director's choices and shot joining are shown in the conversation, a job's queue position is reported, and more clients are supported.",
+          "ComfyUI console: each log line now appears once.",
+          "Tutorial: new chapters on closing the launcher, repairing model files and making pictures of different shapes on a canvas."
+        ]
+      },
+      "zh": {
+        "summary": "全新界面带来更友好、丝滑、现代的体验，隐私保护进一步加强。",
+        "changes": [
+          "全新界面：更友好、丝滑、现代的体验。在任何页面都能看到和管理所有正在生成、排队的视频和图片；切换页面不会中断生成，写到一半的描述和参考图都还在；以前生成的视频也可以直接用作参考，首尾帧可以从作品中直接选；支持浅色主题。",
+          "隐私保护加强：删除作品时一并删除相关的上传图片和提示词，下载和分享默认不含提示词。",
+          "图片生成更可控：支持 LoRA，并可以通过手绘草图更精细地控制生成；误删的图片可在“最近删除”中找回。",
+          "照片生成角色：支持用一张照片生成角色卡，包括正面、侧面和背面形象。",
+          "剪辑：离开剪辑页面时自动关闭麦克风，按 Esc 结束录制时已录内容会保留，导出默认选择完整视频和高画质。",
+          "作品库：窄窗口下也能正常查看和播放作品。",
+          "Mac 安装更稳定：修复部分 Mac 无法完成安装的问题。",
+          "生成更稳定：12 GB 显卡上的提示词增强更不容易失败，显存较小的显卡也能正常生成图片。",
+          "下载与启动：视频无法下载时会给出提示，保存的模板缺失或损坏时启动器也能正常启动。",
+          "内置导演与智能体工具：导演的选择和镜头拼接过程显示在对话中，智能体工具会报告任务的排队位置，并兼容更多客户端。",
+          "ComfyUI 控制台：每行日志只显示一次。",
+          "教程：新增关闭启动器、修复模型文件、在画布上做不同比例图片三章。"
+        ]
+      }
+    },
+    {
+      "product_version": "0.5.4",
+      "en": {
+        "summary": "Closing the launcher offers Exit or Run in background. Offline installation saves disk space and reuses an existing model folder. An interrupted second pass resumes from its last completed step, the second pass uses less graphics memory, and extending the same video again starts sooner. Picture shape can be chosen on a canvas with pictures, and several installation stops are fixed.",
+        "changes": [
+          "Closing the launcher: a choice appears with Exit, which stops generation and quits, and Run in background, which hides the window while generation continues and can be reopened or quit from the tray icon (the menu bar icon on Mac).",
+          "Second pass: after an interruption by a lack of system memory, the retry continues from the last completed step instead of starting again, and the result is identical to an uninterrupted run. At high resolution the second pass uses up to about 2 GB less graphics memory, which leaves 8 GB cards more room. With a long reference video, a refused locked-page copy falls back to ordinary memory instead of failing the second pass at its start.",
+          "Extending videos: memory for the ending clip is estimated from its real size, so a loaded model is no longer released and read from disk again. Extending the same video again does not encode its ending a second time, so the next extension starts sooner.",
+          "Offline installation: importing the runtime package again in place counts model packs that are already installed, without unpacking them again or keeping two copies. An existing model folder can be chosen when installing from the runtime package, and matching models are used directly, which saves a download of about 49 GiB. After a move, model pack status follows the new location, and imported folders have shorter paths, so an installation in an ordinary folder starts from where it is.",
+          "Model files: when a model file differs from the tested version, the failure card names the package to import again, and the original file is kept under a new name while the version from the package replaces it.",
+          "Pictures: choose the shape of a new picture on a canvas that already holds pictures; with another shape the new picture is placed on a new canvas and can be undone in one step. A long description expands only while focused and shows on one line otherwise, so a multi-line description no longer moves the canvas in narrow windows. Prompt rewriting without pictures keeps the unused vision part in main memory when it would leave little graphics memory to spare.",
+          "Launcher and image models: while an image model is in use, Repair and Delete are gray, with the reason and what to do written beside them.",
+          "Linux installation: the chosen drive is checked first, and FAT32, exFAT or a location that does not allow running programs stops the installation with an explanation and a request to choose another drive.",
+          "Windows installation: setup no longer stops at a PowerShell debugger prompt, and the launcher no longer stops at the check step with Access denied when Windows briefly holds a file that was just written; it retries for a few seconds and then copies the folder into place. Installing node dependencies and updating the engine also use short paths.",
+          "Export and dubbing: several calculations no longer depend on a component that Windows application control can block, and the output is unchanged.",
+          "Long videos and reports: when the record of a seam is missing, that part is generated again once; a seam that still has no record at join time is joined directly, so the video can still be saved. Failed long video requests, chat sends and high-resolution image runs leave the diagnostic report the facts needed to find the cause."
+        ]
+      },
+      "zh": {
+        "summary": "关闭启动器时可选“退出”或“后台运行”。离线安装更省空间，并可直接使用已有模型文件夹。第二遍被中断后从已完成的步骤继续，第二遍少占显存，再次续写同一个视频起步更快。已有图片的画布可以选择新图比例，Windows 和 Linux 的若干安装中断问题已修复。",
+        "changes": [
+          "关闭启动器：弹出选择，“退出”停止生成并退出，“后台运行”隐藏窗口、生成继续，可从托盘图标（Mac 为菜单栏图标）重新打开或退出。",
+          "第二遍：因系统内存不足中断后，重试从已完成的步骤继续，不再全部重做，结果与不中断时完全一致。高分辨率时第二遍最多少占约 2 GB 显存，8 GB 显卡的余量更大。带长参考视频时，锁页内存被系统拒绝就改用普通内存，不再在第二遍开始时整个失败。",
+          "续写：按结尾片段的实际大小估算内存，已载入的模型不再被放掉、重新读盘。续写同一个视频时不再重复编码它的结尾，再次续写起步更快。",
+          "离线安装：原地重新导入运行环境包时，已装好的模型包直接算数，不再重新解压，也不再占双份空间。用运行环境包安装时也能选已有的模型文件夹，对得上的模型直接使用，免下约 49 GiB。换了安装位置后，模型包状态按新位置显示；导入后的文件夹路径变短，放在普通文件夹里的安装直接从原位置启动。",
+          "模型文件：模型文件与测试过的版本不一致时，出错卡片写明重新导入哪个包；原文件改名保留，再换成包里的版本。",
+          "图片：画布已有图片时可选择新图的比例；选了别的比例，新图放在新画布上，可一次撤销。较长的描述只在输入框获得焦点时展开，否则以一行加省略号显示，窄窗口里输入多行描述时画布不再被顶动。无图的提示词改写在显存余量不大时，把用不到的视觉部分留在内存。",
+          "启动器与图像模型：图像模型正在使用时，“修复”“删除”变灰，旁边写明原因和怎么做。",
+          "Linux 安装：安装前检查所选硬盘，FAT32、exFAT 或不允许运行程序的位置会先停下并说明，请选择其他硬盘。",
+          "Windows 安装：安装不再停在 PowerShell 调试提示符；Windows 短暂占用刚写好的文件时，启动器不再停在检查步骤报“访问被拒绝”，改为重试数秒再复制到位。安装节点依赖、更新引擎时也使用短路径。",
+          "导出和配音：几处计算不再依赖可能被 Windows 应用控制拦截的组件，输出不变。",
+          "长视频与报告：接缝记录缺失时，该段重新生成一次；合并时仍缺少记录的接缝按直接拼接保存，不再因此无法保存。长视频提交、聊天发送和高分辨率图片生成失败时，诊断报告记下判断原因所需的信息。"
+        ]
+      }
+    },
+    {
+      "product_version": "0.5.3",
+      "en": {
+        "summary": "Short films are finished for you: the built-in director picks and joins the takes, the film arrives in Autopilot as a card, and an editing project with one part per shot is ready. H3 Image takes up to 16 reference pictures, and consecutive images start sooner. Imported clips can be removed from the editor, and waits, failures, setup and narrow windows read more clearly.",
+        "changes": [
+          "Short films: a screenplay can carry its outline and the blocking of each scene, and the blocking goes into every shot of that scene. With the built-in director, takes are chosen and joined automatically once they are shot, and the work continues after a pause, a resume or a restart. The finished film appears in the Autopilot conversation as a card that plays, opens or goes straight to editing, and it also opens as an editing project with one part per shot.",
+          "Reference pictures: H3 Image accepts up to 16 reference pictures and Qwen-Image 2.1 accepts four. A note appears when too many pictures are added at once, pictures that cannot fit are refused before the run starts, and Generate points to the pictures to remove when the selected model's limit is exceeded.",
+          "Image speed: consecutive images keep the models loaded when the graphics card and memory allow, and the same prompt is not encoded again, so the second image onward starts sooner. Results are saved as high-quality JPEG, and temporary uploads are removed after each run.",
+          "Editor: the Imported tab has a remove button on every clip, including ones that could not be opened. Only FreeVideo's copy is deleted, never the original file, and a clip that an edit uses, even in an earlier version, asks for a second confirmation. Work thumbnails in the media library display correctly, and the Edit button on finished-video cards is visible again.",
+          "Waits: prompt rewriting counts from the press, the size range shows Estimating while it is worked out, and starting a generation or opening the page from the launcher shows elapsed seconds after 3 s. Automatic subtitles show Unpacking, Autopilot shows Sending and the seconds spent waiting for a reply, and preparing reference media shows which file is in progress.",
+          "Failures and settings: a missing or damaged model file is explained on the failure card, and cards that suggest a repair have an Open settings button that goes to Detect & review. Offline installations are told to import the offline package again. A damaged reserved memory setting no longer blocks the settings panel or generation, and a refused save is explained under Save. The launcher report form names the real failure.",
+          "Install and repair: Check and repair list and download again any model file that is missing or damaged, and importing an offline package again completes files left short by an interrupted copy. An installation with a missing model folder no longer stops at the GPU check, and an engine source folder that cannot be read is built again instead of failing every retry. The setup plan shows small sizes in MB or KB, and unavailable buttons share one gray look.",
+          "Windows and downloads: when Windows application control blocks a component file, the GPU check and generation continue, and the block is recognised in any system language. Cards of 16 GB and more keep copying the next layer while the current one computes when commit headroom is limited. The runtime download keeps retrying the official source when a mirror refuses access, with one more public source added.",
+          "Narrow windows: the Autopilot conversation scrolls on its own with the header and input in view, and an unsent message shows its reason on its own line. The studio shows the queued count and each run's size and length in full, download size and speed stay together, export choices and the reserved memory title stay on one line, and setup lines wrap between phrases. The Connect an agent card keeps its arrow with its words, and a failed lookup shows only Retry and Report a problem.",
+          "Nodes view: switching to it no longer leaves a node under the view bar, and the voice reference, dialogue tail and empty prompt switches show Chinese names in the Chinese interface. The media panel says once, not three times, when some saved items cannot be read.",
+          "Generation: a queue read that receives a web page instead of data is retried like a lost connection, so repeating generation keeps going. A second-pass memory failure that a smaller retry cannot help is reported sooner.",
+          "Tutorial: new chapters on beat snapping, run status, generating with reference pictures, the outline and staging of a short film, and the editing project a finished film leaves."
+        ]
+      },
+      "zh": {
+        "summary": "短剧可以一路做完：内置导演自动选片并接成影片，成片以卡片出现在 AI 全自动对话中，同时建好按镜头分段的剪辑工程。H3 Image 支持最多 16 张参考图，连续出图起步更快。剪辑器可以删除已导入素材，等待、失败、安装和窄窗口的显示更清楚。",
+        "changes": [
+          "短剧：剧本可以写大纲和每场站位，站位自动写进该场每个镜头。选用内置导演时，拍完后自动选片并接成影片，暂停、继续和重启后都会接着做。成片以卡片出现在 AI 全自动对话中，可以播放、打开或直接进入剪辑，同时建好按镜头分段的剪辑工程。",
+          "参考图：H3 Image 最多可用 16 张参考图，Qwen-Image 2.1 可用 4 张。一次加入过多时显示提示，放不下的参考图在开始前拒绝；超出所选模型上限时，点“生成”会定位到需要移除的图。",
+          "出图速度：显存和内存允许时，连续生成图片保持模型常驻，同一提示词不再重复编码，第二张起开始得更快。结果保存为高质量 JPEG，每次生成后清理临时上传。",
+          "剪辑器：“已导入”页的每个素材（包括打不开的）都有删除按钮，只删除软件复制的副本，不删原文件；被剪辑使用的素材（包括只在早先版本中使用的）需再确认一次。素材库中的作品缩略图正常显示，已完成视频卡片上的“剪辑”按钮重新显示。",
+          "等待：提示词改写从点下就计秒，可生成范围计算时显示“正在估算…”，开始生成和从启动器打开页面超过 3 秒时显示已用秒数。自动字幕解压时显示“正在解压”，AI 全自动显示“正在发送…”和等待回复的秒数，准备参考素材时显示正在处理第几个文件。",
+          "失败和设置：缺失或损坏的模型文件在失败卡片上说明原因；建议修复的卡片新增“打开设置”，直接定位到“检测并预览”。离线安装改为提示重新导入离线包。预留显存设置文件损坏时，设置面板和生成照常进行；保存被拒时在“保存”下说明原因。启动器的报告表单写出真实的失败原因。",
+          "安装和修复：检测和修复会列出并重新下载缺失或损坏的模型文件，重新导入离线包会补全复制中断留下的不完整文件。缺少模型文件夹时，安装不再停在 GPU 检查一步；引擎源码目录无法读取时改为重新构建，不再每次重试都失败。安装计划中较小的文件以 MB 或 KB 显示，不可用的按钮统一为灰色。",
+          "Windows 和下载：Windows 应用控制拦截某个组件文件时，GPU 检查和生成照常继续，在任何系统语言下都能识别该拦截。提交余量受限时，16 GB 及以上显卡在计算当前层的同时仍会拷贝下一层。运行环境下载在镜像拒绝访问时继续重试官方线路，并新增一个公开备用线路。",
+          "窄窗口：AI 全自动的对话单独滚动，顶栏和输入框始终可见，没发出的消息原因单独显示一行。创作面板完整显示排队数量以及每条的尺寸和时长，下载进度的大小和速度不再拆开，导出选项和预留显存标题保持一行，安装页文字按词组换行。连接 Agent 卡片的箭头不再和文字分开，获取地址失败时只显示重试和提交问题。",
+          "节点视图：切换过来时节点不再被顶部的视图切换栏遮住，“声音参考”“隐藏对白尾段”“允许空描述”三个开关显示中文名称。素材区有资料读取失败时只提示一次，不再重复三次。",
+          "生成：队列读取得到网页而不是数据时按断线重试，重复生成不再被停掉。第二遍显存不足且缩小重试也无济于事时，更早报告失败。",
+          "教程：新增对齐音乐节拍、运行状态、用参考图生成图片、短剧的大纲和站位、短剧成片的剪辑工程五章。"
+        ]
+      }
+    }
+  ]
+}

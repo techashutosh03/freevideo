@@ -1,0 +1,35 @@
+/* The guide's steps, the first-start hint, the next step and the entry showcase are cards of the shared anchored layer
+   (feature_tour.css, .fv-tour-layer). What is left here: the line that waits for the view, and Settings › Getting started. */
+.fv-tour-layer .fv-showcase-media{aspect-ratio:960/272;background:#dfe3ea}
+.fv-tour-layer .fv-showcase-media>img{object-fit:contain}
+.fv-tour-layer .fv-guide-figure{aspect-ratio:auto;background:none}
+.fv-tour-layer .fv-guide-figure>img{position:static;height:auto}
+
+/* Waiting for the view before a replay: a small glass line under the top bar, with Cancel. */
+.fv-studio .fv-guide-wait{position:absolute;top:calc(var(--fv-header-h,56px) + var(--fv-sp-12,12px));right:var(--fv-sp-16,16px);z-index:40;display:flex;align-items:center;gap:var(--fv-sp-12,12px);
+  max-width:calc(100% - 32px);padding:var(--fv-sp-8,8px) var(--fv-sp-8,8px) var(--fv-sp-8,8px) var(--fv-sp-16,16px);border:1px solid var(--fv-edge);border-radius:var(--fv-rad-ctl,12px);
+  background:rgb(var(--fv-tint) / var(--fv-a3));-webkit-backdrop-filter:blur(var(--fv-glass-blur3,40px)) saturate(175%);backdrop-filter:blur(var(--fv-glass-blur3,40px)) saturate(175%);
+  box-shadow:inset 0 1px 0 var(--fv-edge-hi),var(--fv-sh2);color:var(--fv-fg);font:var(--fv-fs-2,13px)/var(--fv-lh-2,20px) var(--fv-font,system-ui,sans-serif)}
+.fv-studio .fv-guide-wait p{margin:0}
+.fv-studio .fv-guide-wait button{height:var(--fv-ctl,32px);min-height:0;padding:0 var(--fv-sp-12,12px);border:0;border-radius:var(--fv-rad-sm,8px);background:var(--fv-ctl-bg);color:var(--fv-fg);font-weight:var(--fv-fw-2,500)}
+.fv-studio .fv-guide-wait button:hover{background:var(--fv-ctl-hover)}
+:is(:root[data-glass=solid],:root.lite) .fv-studio .fv-guide-wait{-webkit-backdrop-filter:none;backdrop-filter:none;background:rgb(var(--fv-solid3))}
+@media(prefers-reduced-transparency:reduce){.fv-studio .fv-guide-wait{-webkit-backdrop-filter:none;backdrop-filter:none;background:rgb(var(--fv-solid3))}}
+
+/* Settings › Getting started: one row per way back in (icon, name and one line, its button). */
+.fv-guide-replay{display:flex;flex-direction:column;gap:var(--fv-sp-8,8px)}
+.fv-guide-replay .fv-guide-replay-row{display:flex;flex-direction:column;gap:var(--fv-sp-8,8px)}
+.fv-guide-replay h3{margin:0}
+.fv-guide-replay .fv-guide-sub{margin:var(--fv-sp-8,8px) 0 0;font-size:var(--fv-fs-1,12px);line-height:var(--fv-lh-1,16px);font-weight:var(--fv-fw-3,600);color:var(--fv-fg3)}
+.fv-guide-replay .fv-guide-rows{display:flex;flex-direction:column;border-radius:var(--fv-rad-ctl,12px);background:var(--fv-ctl-bg);overflow:hidden}
+.fv-guide-replay .fv-guide-row{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:var(--fv-sp-12,12px);min-height:56px;padding:var(--fv-sp-8,8px) var(--fv-sp-12,12px)}
+.fv-guide-replay .fv-guide-row+.fv-guide-row{border-top:1px solid var(--fv-line)}
+.fv-guide-replay .fv-guide-row>svg{width:16px;height:16px;justify-self:center;fill:none;stroke:var(--fv-fg2);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.fv-guide-replay .fv-guide-row b{display:block;font-weight:var(--fv-fw-2,500);color:var(--fv-fg);font-size:var(--fv-fs-2,13px);line-height:var(--fv-lh-2,20px)}
+.fv-guide-replay .fv-guide-row small{display:block;color:var(--fv-fg3);font-size:var(--fv-fs-1,12px);line-height:var(--fv-lh-1,16px)}
+.fv-guide-replay .fv-guide-row button{min-width:72px}
+.fv-guide-replay .fv-guide-howtos{display:flex;flex-direction:column;gap:2px;padding:var(--fv-sp-4,4px);border:1px solid var(--fv-edge);border-radius:var(--fv-rad-ctl,12px);background:rgb(var(--fv-solid3));box-shadow:var(--fv-sh2)}
+.fv-guide-replay .fv-guide-howtos[hidden]{display:none}
+.fv-guide-replay .fv-guide-howtos button{justify-content:flex-start;text-align:left;border:0;background:transparent;min-height:32px}
+.fv-guide-replay .fv-guide-howtos button:hover{background:var(--fv-ctl-hover)}
+.fv-guide-replay .fv-guide-howtos hr{width:100%;height:1px;margin:var(--fv-sp-4,4px) 0;border:0;background:var(--fv-line)}

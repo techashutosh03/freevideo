@@ -1,0 +1,2050 @@
+"""Browse completed FreeVideo outputs across ComfyUI/browser restarts."""
+import asyncio
+import hashlib
+from contextlib import nullcontext
+import io
+import json
+import logging
+import os
+import re
+import stat
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .agent import enabled as agent_enabled
+from .comfy_assets import output_summary
+from .runtime_alias import is_junction, checked_real_path, AliasUnavailable
+from .long_paths import io_path, plain
+from .disk_space import file_reason
+from .system import windows
+
+_ID = re.compile(r'\d{4}-\d{2}-\d{2}/[0-9a-f]{32}')
+# The prompt box takes 20000 characters; a character is at most 4 bytes.
+_PROMPT_BYTES = 4 * 20000
+
+
+def _video(root, identity):
+    if not isinstance(identity, str) or not _ID.fullmatch(identity):
+        raise ValueError('Invalid saved video')
+    root = Path(root).resolve()
+    path = (root / 'FreeVideo' / identity / 'video.mp4').resolve()
+    if not path.is_relative_to(root / 'FreeVideo'):
+        raise ValueError('Saved video is outside the output folder')
+    return path
+
+
+class _Unfinished(ValueError):
+    """A run whose summary says it did not finish: not a damaged record."""
+
+
+def _report(path):
+    # Read only the small request summary, never tensors, prompts or media.
+    with path.with_suffix('.request.json').open('rb') as stream:
+        data = stream.read(4 * 1024 * 1024 + 1)
+    if len(data) > 4 * 1024 * 1024:
+        raise ValueError('Request summary is too large')
+    report = json.loads(data)
+    if not isinstance(report, dict):
+        raise ValueError('Request summary is not an object')
+    if report.get('success') is not True:
+        raise _Unfinished('Video is not complete')
+    return report
+
+
+def _agent(folder):
+    """The agent job that made this run, from the small record agent requests leave in workflow.json."""
+    try:
+        with (folder / 'workflow.json').open('rb') as stream:
+            data = stream.read(64 * 1024 + 1)
+        if len(data) > 64 * 1024 or b'"freevideo_agent"' not in data:
+            return None
+        value = json.loads(data).get('freevideo_agent')
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    return {key: str(value[key])[:120] for key in ('job', 'label', 'project', 'client') if value.get(key)}
+
+
+def _identity_of(root, value):
+    """The library identity of a video path named by a run, or None for a file elsewhere."""
+    try:
+        relative = Path(value).resolve().relative_to(Path(root).resolve() / 'FreeVideo')
+    except (OSError, ValueError, TypeError):
+        return None
+    identity = '/'.join(relative.parts[:2])
+    return identity if len(relative.parts) == 3 and relative.name == 'video.mp4' and _ID.fullmatch(identity) else None
+
+
+def _source_identity(root, folder, report):
+    """The saved video this run started from: the preview it upscales, or the footage it continues."""
+    source = (report.get('upscaled_preview') or {}).get('output') if isinstance(report.get('upscaled_preview'), dict) else None
+    if not source:
+        try:
+            with (folder / 'comfy-request.json').open('rb') as stream:
+                data = stream.read(1024 * 1024 + 1)
+            command = json.loads(data).get('command') if len(data) <= 1024 * 1024 else None
+            if isinstance(command, list) and '--continue-from' in command:
+                source = command[command.index('--continue-from') + 1]
+        except (OSError, ValueError, AttributeError, IndexError):
+            pass
+    return _identity_of(root, source) if isinstance(source, str) else None
+
+
+def _prompt_digest(folder):
+    try:
+        with os.fdopen(os.open(folder / 'prompt.txt', os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                                | getattr(os, 'O_BINARY', 0)), 'rb') as stream:
+            data = stream.read(_PROMPT_BYTES + 1)
+        text = data.decode('utf-8').strip() if len(data) <= _PROMPT_BYTES else ''
+    except (OSError, ValueError):
+        return None
+    return hashlib.sha256(text.encode('utf-8')).hexdigest() if text else None
+
+
+# The same prompt links videos only while each is made within this time of the one before it and from the same
+# pictures, clips and audio, across midnight too; the same words hours later, or on other pictures, are another task.
+_SITTING_SECONDS = 2 * 3600
+_INPUT_FILE = re.compile(r'(?:reference-\d{2}\.(?:png|mp4|wav)|(?:first|last)\.png)')
+
+
+def _inputs_digest(folder):
+    """What the run was given besides words: its reference pictures, clips and audio and its first and last frame."""
+    parts = []
+    try:
+        for entry in sorted(os.scandir(folder), key=lambda item: item.name):
+            if _INPUT_FILE.fullmatch(entry.name) and entry.is_file(follow_symlinks=False):
+                with open(entry.path, 'rb') as stream:
+                    parts.append('%s:%d:%s' % (entry.name, entry.stat().st_size, hashlib.sha256(stream.read(2**20)).hexdigest()))
+    except OSError:
+        return None
+    return hashlib.sha256('\n'.join(parts).encode('utf-8')).hexdigest()[:16]
+
+
+def _tasks(root, rows, folders, reports):
+    """Name each row's task: the earliest video connected to it by a preview and its upscale, a continuation,
+    one agent job, or the same prompt text and inputs within two hours of the one before. A video with no such link is its own task."""
+    parent = {row['id']: row['id'] for row in rows}
+    def find(item):
+        while parent[item] != item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+    seen, latest = {}, {}
+    for row in sorted(rows, key=lambda row: (row['created_at'], row['id'])):
+        identity = row['id']
+        tokens = ['id:' + identity]
+        source = _source_identity(root, folders[identity], reports[identity])
+        if source:
+            tokens.append('id:' + source)
+        if row.get('agent', {}).get('job'):
+            tokens.append('job:' + row['agent']['job'])
+        digest = _prompt_digest(folders[identity])
+        if digest:
+            tokens.append('prompt:%s:%s' % (digest, _inputs_digest(folders[identity])))
+        moment = datetime.fromisoformat(row['created_at']).timestamp()
+        for token in tokens:
+            # Ascending order: a prompt token far from the video before it starts a new sitting.
+            if token in seen and not (token.startswith('prompt:') and moment - latest[token] > _SITTING_SECONDS):
+                parent[find(identity)] = find(seen[token])
+            else:
+                seen[token] = identity
+            latest[token] = moment
+    groups = {}
+    for row in rows:
+        groups.setdefault(find(row['id']), []).append(row)
+    for members in groups.values():
+        earliest = min(members, key=lambda row: (row['created_at'], row['id']))['id']
+        for row in members:
+            row['task'] = earliest
+
+
+def _favorite(path):
+    """A missing or damaged optional sidecar does not hide a saved video."""
+    saved = path.with_suffix('.favorite.json')
+    try:
+        if not _plain(saved):
+            return False
+        with os.fdopen(os.open(saved, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                                | getattr(os, 'O_BINARY', 0)), 'rb') as stream:
+            data = stream.read(1025)
+        value = json.loads(data) if len(data) <= 1024 else None
+        return isinstance(value, dict) and value.get('favorite') is True
+    except (OSError, ValueError):
+        return False
+
+
+def set_favorite(output_directory, identity, favorite):
+    """Change only a completed creation's favorite sidecar, under the delete locks."""
+    if type(favorite) is not bool:
+        raise ValueError('Invalid favorite state')
+    output_directory = checked_real_path(output_directory)
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    with _PENDING, _RELEASING:
+        path = _video(output_directory, identity)
+        expected = root / identity / 'video.mp4'
+        if path != expected or not all(_plain(p) for p in (root, path.parent.parent, path.parent, path)) or not path.is_file():
+            raise ValueError('Saved video is not a regular library creation')
+        report = path.with_suffix('.request.json')
+        saved = path.with_suffix('.favorite.json')
+        if not _plain(report) or saved.is_symlink() or (saved.exists() and (not _plain(saved) or not saved.is_file())):
+            raise ValueError('Saved video sidecar is not a regular file')
+        _report(path)
+        if not path.stat().st_size:
+            raise ValueError('Video is empty')
+        if favorite:
+            from .monitoring import save
+            save(saved, dict(favorite=True))
+        else:
+            saved.unlink(missing_ok=True)
+    return dict(id=identity, favorite=favorite)
+
+
+def list_videos(output_directory, *, before=None, limit=24, favorite=None):
+    """Return a stable newest-first page, with only relative output paths."""
+    if not 1 <= limit <= 48:
+        raise ValueError('Invalid page size')
+    if favorite is not None and type(favorite) is not bool:
+        raise ValueError('Invalid favorite filter')
+    cursor = None
+    if before:
+        stamp, identity = before.split(':', 1)
+        if not stamp.isdigit() or not _ID.fullmatch(identity):
+            raise ValueError('Invalid page cursor')
+        cursor = (int(stamp), identity)
+    root = Path(output_directory).resolve()
+    from .comfy_chain import hidden_outputs
+    hidden = hidden_outputs(root)
+    candidates = []
+    for path in (root / 'FreeVideo').glob('*/*/video.mp4'):
+        identity = path.parent.relative_to(root / 'FreeVideo').as_posix()
+        try:
+            path = _video(root, identity)
+            info = path.stat()
+            key = (info.st_mtime_ns, identity)
+            if info.st_size and (cursor is None or key < cursor):
+                candidates.append((key, path, info))
+        except (OSError, ValueError):
+            continue
+    rows, unreadable, folders, reports = [], [], {}, {}
+    from .comfy_progress import REPORTS
+    tokens = REPORTS.tokens(root)
+    if tokens:
+        REPORTS.roots.add(root / 'FreeVideo')  # a token of an earlier service stays readable
+    for key, path, info in sorted(candidates, key=lambda item: item[0], reverse=True):
+        relative = Path('FreeVideo') / key[1] / 'video.mp4'
+        if relative.as_posix() in hidden:
+            continue
+        is_favorite = _favorite(path)
+        if favorite is not None and is_favorite != favorite:
+            continue
+        try:
+            try:
+                report = _report(path)
+            except (FileNotFoundError, _Unfinished):
+                # A generation still writing its video has no summary yet; a failed run is not listed.
+                continue
+            except (OSError, ValueError):
+                # Summaries are replaced atomically, so one that cannot be read is damaged.
+                unreadable.append(key)
+                continue
+            summary = output_summary(report, relative)
+            # Geometry may gain input metadata in future reports. Keep this API
+            # an explicit allowlist, not an export of the retained report.
+            summary['geometry'] = {k: v for k, v in summary['geometry'].items()
+                                   if k in ('width', 'height', 'frames', 'fps', 'seconds')
+                                   and type(v) in (int, float)}
+            if 'encoder_file' in summary:
+                # The library API exposes only relative paths.
+                summary['encoder_file'] = dict(summary['encoder_file'])
+                summary['encoder_file'].pop('path', None)
+            if not (root / summary['report']).is_file():
+                summary['report'] = None
+            try:
+                agent = _agent(path.parent) if agent_enabled() else None
+            except Exception as error:
+                # Optional attribution must not hide an otherwise valid saved video.
+                logging.getLogger(__name__).warning('[FreeVideo] Agent label unavailable: %s', error)
+                agent = None
+            if agent:
+                summary['agent'] = agent
+            if key[1] + '/video.mp4' in tokens:
+                summary['report_id'] = tokens[key[1] + '/video.mp4']
+            folders[key[1]], reports[key[1]] = path.parent, report
+            # A video made without a request of its own (the editor's merged export) can go to 4K but not up one step.
+            summary['saved_request'] = (path.parent / 'comfy-request.json').is_file()
+            rows.append(dict(summary, id=key[1], bytes=info.st_size, favorite=is_favorite,
+                             created_at=datetime.fromtimestamp(info.st_mtime, timezone.utc).isoformat(),
+                             cursor=str(key[0]) + ':' + key[1]))
+        except (OSError, ValueError, TypeError, AttributeError):
+            # A partially written or old malformed report must not hide the
+            # rest of the library or publish an unfinished generation.
+            continue
+        if len(rows) > limit:
+            break
+    more = len(rows) > limit
+    rows = rows[:limit]
+    _tasks(root, rows, folders, reports)
+    next_cursor = rows[-1]['cursor'] if more else None
+    for row in rows:
+        row.pop('cursor')
+    # Each page counts the damaged summaries in its own range, so the pages add up.
+    last = (int(next_cursor.split(':', 1)[0]), next_cursor.split(':', 1)[1]) if next_cursor else None
+    return dict(items=rows, next=next_cursor, unreadable=sum(last is None or key > last for key in unreadable))
+
+
+def prompt_text(output_directory, identity):
+    """The text a saved video was made from, or None for a run that kept none."""
+    path = _video(output_directory, identity)
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    saved = path.with_name('prompt.txt')
+    if saved.is_symlink() or not saved.resolve().is_relative_to(root):
+        raise ValueError('Saved prompt is outside the library or is a symbolic link')
+    _report(path)
+    try:
+        with os.fdopen(os.open(saved, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)), 'rb') as stream:
+            data = stream.read(_PROMPT_BYTES + 1)
+    except FileNotFoundError:
+        return None
+    # Longer than the prompt box takes: its beginning alone is not the prompt.
+    return data.decode('utf-8').strip() if len(data) <= _PROMPT_BYTES else None
+
+
+def prompt_seed(output_directory, identity):
+    """The seed a saved video was generated with, or None (an export, an import, an old or damaged receipt)."""
+    path = _video(output_directory, identity)
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    saved = path.with_name('comfy-request.json')
+    try:
+        if saved.is_symlink() or not saved.resolve().is_relative_to(root):
+            return None
+        with os.fdopen(os.open(saved, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)), 'rb') as stream:
+            data = stream.read(4 * 1024**2 + 1)
+        state = json.loads(data) if len(data) <= 4 * 1024**2 else None
+    except (OSError, ValueError):
+        return None
+    seed = state.get('seed') if isinstance(state, dict) and state.get('status') == 'complete' else None
+    return seed if type(seed) is int and 0 <= seed < 2**64 else None
+
+
+def thumbnail(output_directory, identity, *, cached=False):
+    """The JPEG thumbnail of a saved video: its first frame, made once and kept beside it. ``cached`` returns None
+    instead of decoding."""
+    path = _video(output_directory, identity)
+    saved = path.with_suffix('.thumbnail.jpg')
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    def check_sidecar(sidecar):
+        if sidecar.is_symlink() or not sidecar.resolve().is_relative_to(root):
+            raise ValueError('Saved thumbnail sidecar is outside the library or is a symbolic link')
+    check_sidecar(path.with_suffix('.request.json'))
+    check_sidecar(saved)
+    _report(path)
+    info = path.stat()
+    if saved.is_file() and saved.stat().st_mtime_ns >= info.st_mtime_ns:
+        with os.fdopen(os.open(saved, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0)), 'rb') as stream:
+            data = stream.read(512 * 1024 + 1)
+        if data.startswith(b'\xff\xd8') and len(data) <= 512 * 1024:
+            return data
+    if cached:
+        return None
+    # CPU decoding only. Grid thumbnails must not take CUDA memory from a
+    # generation, and we only decode the first frame of each requested video.
+    import av
+    from PIL import Image
+    with av.open(str(path)) as container:
+        stream = container.streams.video[0]
+        stream.thread_count = 1
+        image = next(container.decode(stream)).to_image()
+    image.thumbnail((384, 256), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    image.save(buffer, format='JPEG', quality=80)
+    data = buffer.getvalue()
+    check_sidecar(saved)
+    try:
+        with os.fdopen(os.open(saved, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, 'O_NOFOLLOW', 0)
+                                | getattr(os, 'O_BINARY', 0), 0o666), 'wb') as stream:
+            stream.write(data)
+    except OSError:
+        check_sidecar(saved)
+        pass  # A read-only output directory still supports browsing.
+    return data
+
+
+def video_download(output_directory, identity, *, workflow=False):
+    """The file to send for a download and its name, without renaming the engine's retained artifacts.
+
+    A download leaves this machine, so by default it is a copy without the prompt and the workflow (which
+    names the files the video read); the third value is that copy, for the caller to delete once sent.
+    ``workflow`` sends the saved video itself, which restores its graph when dropped on the canvas."""
+    path = _video(output_directory, identity)
+    _report(path)
+    info = path.stat()
+    if not info.st_size:
+        raise ValueError('Video is empty')
+    stamp = datetime.fromtimestamp(info.st_mtime, timezone.utc).strftime('%Y%m%d_%H%M%S')
+    name = 'FreeVideo_%s_%s.mp4' % (stamp, identity.split('/')[-1][:12])
+    from .comfy_metadata import carries_graph, stripped_copy
+    if workflow or not carries_graph(path):
+        return path, name, None
+    copy = stripped_copy(path, path.with_name('.download-' + os.urandom(16).hex() + '.mp4'))
+    return copy, name, copy
+
+
+ZIP_MOST_ITEMS = 500
+
+
+class _ZipSink:
+    """An unseekable target for zipfile: each take() hands over what was written since the last one."""
+    def __init__(self):
+        self.parts = []
+
+    def write(self, data):
+        self.parts.append(bytes(data))
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def take(self):
+        data, self.parts = b''.join(self.parts), []
+        return data
+
+
+def zip_plan(output_directory, input_directory, items):
+    """Which of the asked-for works can be packed: ``([(kind, key, arcname)], [left out])``.
+
+    A video is named by its saved id and a picture by its file in the image engine's own folder; anything else,
+    a repeat, or a work that cannot be read now is left out (and named in the zip's skipped.txt)."""
+    if not isinstance(items, list) or not items or len(items) > ZIP_MOST_ITEMS:
+        raise ValueError('Invalid selection')
+    from .work_thumbnails import FOLDER, PICTURE
+    plan, left, seen, taken = [], [], set(), set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError('Invalid selection')
+        kind = item.get('kind')
+        key = item.get('id') if kind == 'video' else item.get('file') if kind == 'image' else None
+        if not isinstance(key, str):
+            raise ValueError('Invalid selection')
+        if (kind, key) in seen:
+            continue
+        seen.add((kind, key))
+        try:
+            if kind == 'video':
+                path = _video(output_directory, key)
+                _report(path)
+                if not path.stat().st_size:
+                    raise ValueError('Video is empty')
+                stamp = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).strftime('%Y%m%d_%H%M%S')
+                name = 'videos/FreeVideo_%s_%s.mp4' % (stamp, key.split('/')[-1][:12])
+            else:
+                leaf = key.rpartition('/')[2]
+                if not PICTURE.fullmatch(leaf) or key != FOLDER + '/' + leaf:
+                    raise ValueError('Invalid picture')
+                info = os.lstat(Path(input_directory) / FOLDER / leaf)
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError('Picture is not a plain file')
+                name = 'images/' + leaf
+        except (OSError, ValueError):
+            left.append(key)
+            continue
+        base, dot, extension = name.rpartition('.')
+        number = 1
+        while name in taken:
+            number += 1
+            name = '%s-%d.%s' % (base, number, extension)
+        taken.add(name)
+        plan.append((kind, key, name))
+    return plan, left
+
+
+def zip_stream(output_directory, input_directory, plan, left, *, workflow=False, copies=None):
+    """The bytes of one zip of the planned works, produced piece by piece (stored, not recompressed, zip64).
+
+    Every video's copy without the prompt and workflow is deleted as soon as it is written, also when the
+    generator is closed half way. A work that cannot be read by now is added to skipped.txt at the end.
+    ``copies``, when given, receives the path of each copy as it is made, for a caller that has to delete them itself."""
+    import zipfile
+    from .work_thumbnails import FOLDER
+    sink = _ZipSink()
+    left = list(left)
+    with zipfile.ZipFile(sink, 'w', zipfile.ZIP_STORED, allowZip64=True) as archive:
+        for kind, key, name in plan:
+            copy, started = None, False
+            try:
+                if kind == 'video':
+                    path, _, copy = video_download(output_directory, key, workflow=workflow)
+                    if copy is not None and copies is not None:
+                        copies.append(copy)
+                else:
+                    path = Path(input_directory) / FOLDER / key.rpartition('/')[2]
+                    if not stat.S_ISREG(os.lstat(path).st_mode):
+                        raise ValueError('Picture is not a plain file')
+                with open(path, 'rb') as source:
+                    mtime = time.localtime(os.fstat(source.fileno()).st_mtime)[:6]
+                    entry = zipfile.ZipInfo(name, date_time=max(mtime, (1980, 1, 1, 0, 0, 0)))
+                    entry.compress_type = zipfile.ZIP_STORED
+                    entry.external_attr = 0o644 << 16
+                    with archive.open(entry, 'w', force_zip64=True) as target:
+                        started = True
+                        while True:
+                            chunk = source.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            target.write(chunk)
+                            yield sink.take()
+            except (OSError, ValueError, TypeError):
+                left.append(key + ' (only part of it is in this zip)' if started else key)
+            finally:
+                if copy is not None:
+                    copy.unlink(missing_ok=True)
+            yield sink.take()
+        if left:
+            archive.writestr('skipped.txt', 'These works could not be read and are not in this zip:\n' + '\n'.join(left) + '\n')
+    yield sink.take()
+
+
+# What a FreeVideo request writes into its own run folder, including the
+# prompt-enhancement record and the staging copy monitoring.save keeps when
+# Windows would not let it replace a JSON record. A creation whose folder
+# holds anything else, or any link, is not deleted at all.
+_OWNED_FILE = re.compile(r'(?:video\.[A-Za-z0-9._-]+|prompt\.txt|workflow\.json|comfy-request\.json|generate\.log'
+                         r'|continuation-source\.safetensors'
+                         r'|frame-preview\.jpg|media\.json|prompt-rewrite\.json|input-conditioning\.pt|(?:first|last)\.png'
+                         r'|reference-\d{2}\.(?:png|mp4|wav)'
+                         r'|\.(?:share|editor-export|download)-[0-9a-f]{32}\.mp4)(?:\.[a-z0-9_]{8}\.tmp)?')
+_OWNED_FOLDER = 'video.artifacts'
+_REPARSE_POINT = 0x400
+
+
+class DeleteRefused(ValueError):
+    def __init__(self, reason, kept=()):
+        super().__init__(reason)
+        self.reason, self.kept = reason, list(kept)
+
+
+def _plain(path):
+    """A regular file or directory: never a symlink, junction or other reparse point."""
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & _REPARSE_POINT:
+        return False
+    return stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)
+
+
+def _foreign(folder):
+    """Names in a run folder that FreeVideo did not write, or that are links."""
+    folder = io_path(checked_real_path(folder))
+    kept = []
+    for entry in sorted(folder.iterdir()):
+        if not _plain(entry):
+            kept.append(entry.name)
+        elif entry.is_dir():
+            if entry.name != _OWNED_FOLDER:
+                kept.append(entry.name + '/')
+                continue
+            for parent, folders, files in os.walk(entry):
+                for name in folders + files:
+                    if not _plain(Path(parent) / name):
+                        kept.append((Path(parent) / name).relative_to(folder).as_posix())
+                folders[:] = [name for name in folders if not is_junction(Path(parent) / name)]
+        elif not _OWNED_FILE.fullmatch(entry.name):
+            kept.append(entry.name)
+    return kept
+
+
+def _remove(folder):
+    """Remove a verified folder bottom-up; return bytes freed and paths left behind."""
+    try:
+        folder = io_path(checked_real_path(folder))
+    except AliasUnavailable:
+        return 0, [plain(folder)]
+    freed, left = 0, []
+    if is_junction(folder):
+        return 0, [plain(folder)]
+    if windows():
+        # Bottom-up os.walk cannot prune before entering a Windows junction.
+        # Collect a pruned listing, then keep os.walk's original bottom-up
+        # sibling order when removing ordinary rows.
+        rows = {}
+        for parent, folders, files in os.walk(folder):
+            linked = [name for name in folders if is_junction(Path(parent) / name)]
+            left.extend(plain(Path(parent) / name) for name in linked)
+            folders[:] = [name for name in folders if name not in linked]
+            rows[Path(parent)] = (parent, folders[:], files)
+        ordered, pending = [], [(Path(folder), False)]
+        while pending:
+            current, visited = pending.pop()
+            row = rows.get(current)
+            if row is None:
+                continue
+            if visited:
+                ordered.append(row)
+            else:
+                pending.append((current, True))
+                pending.extend((current / name, False) for name in reversed(row[1]))
+        walk = ordered
+    else:
+        walk = os.walk(folder, topdown=False)
+    for parent, folders, files in walk:
+        for name in files:
+            path = Path(parent) / name
+            try:
+                if not _plain(path):
+                    left.append(plain(path)); continue
+                size = path.stat().st_size
+                if name == 'continuation-source.safetensors':
+                    # Request snapshots are read-only while used; Windows
+                    # requires clearing that flag when deleting their run.
+                    path.chmod(0o600)
+                path.unlink()
+                freed += size
+            except OSError:
+                left.append(plain(path))
+        for name in folders:
+            try:
+                (Path(parent) / name).rmdir()
+            except OSError:
+                left.append(plain(Path(parent) / name))
+    try:
+        Path(folder).rmdir()
+    except OSError:
+        left.append(plain(folder))
+    return freed, left
+
+
+# Decoded frames and audio the engine writes to build and check the MP4.
+# Nothing reads them once a creation is saved: Creations, sharing and the
+# workflow read the MP4, and an upscale reads the preview's first pass. The
+# sampling result, conditioning and first pass stay.
+_DECODED = ('rgb.npy', 'audio.npy', 'audio.wav')
+# The normalized frames of reference videos and pictures: only the encoder reads
+# them, once, to build the conditioning. About 1.3 GB per reference video.
+_REFERENCE_FRAMES = 'media'
+_ATTEMPT = re.compile(r'\d{2}-[0-9A-Za-z_-]+')
+_RELEASED = '.decoded-released.json'
+# The startup release, a generation re-arming it and a library delete take
+# turns, so none of them reads a folder or the marker while another writes it.
+_RELEASING = threading.Lock()
+
+
+def release_decoded(folder, names=_DECODED, measure=False):
+    """Delete a saved creation's decoded frames and audio, retried attempts' included.
+
+    Only where the engine writes them: video.artifacts itself and its
+    attempts/NN-id folders. A folder holding anything FreeVideo did not write,
+    or any link, is left alone, as delete_video leaves it. Paths Windows still
+    has open are listed. ``names`` and ``measure`` serve clear_working_files, which
+    counts what it would free before it deletes.
+    """
+    try:
+        folder = io_path(checked_real_path(folder))
+        artifacts = folder / _OWNED_FOLDER
+        if not _plain(folder) or _foreign(folder):
+            return dict(freed_bytes=0, left=[], skipped='foreign-files')
+        if not artifacts.is_dir():
+            return dict(freed_bytes=0, left=[], skipped='no-artifacts')
+        places, freed, left = [artifacts], 0, []
+        try:
+            if (artifacts / 'attempts').is_dir():
+                places += [path for path in sorted((artifacts / 'attempts').iterdir())
+                           if _ATTEMPT.fullmatch(path.name) and path.is_dir()]
+        except OSError:
+            left.append(_OWNED_FOLDER + '/attempts')  # retried at a later start
+        for place in places:
+            paths = [place / name for name in names]
+            try:
+                if tuple(names) == _DECODED and (place / _REFERENCE_FRAMES).is_dir() and _plain(place / _REFERENCE_FRAMES):
+                    paths += sorted((place / _REFERENCE_FRAMES).glob('*.npy'))
+            except OSError:
+                left.append((place / _REFERENCE_FRAMES).relative_to(folder).as_posix())
+            for path in paths:
+                try:
+                    if not _plain(path):
+                        continue
+                    size = path.stat().st_size
+                    if not measure:
+                        path.unlink()
+                    freed += size
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    left.append(path.relative_to(folder).as_posix())
+        return dict(freed_bytes=freed, left=left)
+    except OSError:
+        # Listed as left, so a later start tries the whole folder again.
+        return dict(freed_bytes=0, left=['.'], skipped='unreadable')
+
+
+# What a finished video's folder keeps for resuming a decode and for a preview's
+# upscale: the sampling input, the sampled latents and a refinement's input. The
+# MP4 is all that playback, export, a continuation (which re-reads the footage
+# from it) and the editor use.
+_WORKING = ('conditioning.pt', 'latents.pt', 'refine-input.pt')
+
+
+def clear_working_files(output_directory, *, apply=False):
+    """Bytes the finished, non-preview videos' working files hold; deleted when ``apply``.
+
+    A preview keeps them, since its upscale needs the first pass and the sampling
+    input. Nothing is touched for a video without a finished MP4 summary or one
+    whose request is still queued or running. Paths Windows has open are counted
+    in ``left`` and stay.
+    """
+    try:
+        output_directory = checked_real_path(output_directory)
+    except AliasUnavailable:
+        raise OSError('The output folder cannot be accessed') from None
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    totals = dict(bytes=0, freed_bytes=0, left=0)
+    if not root.is_dir():
+        return totals
+    with _RELEASING:
+        for path in sorted(root.glob('*/*/video.mp4')):
+            folder = path.parent
+            try:
+                if (not _ID.fullmatch(folder.relative_to(root).as_posix())
+                        or not _plain(folder.parent) or not _plain(folder)):
+                    continue
+                if _report(path).get('preview'):
+                    continue
+                request = folder / 'comfy-request.json'
+                if request.is_file():
+                    state = json.loads(request.read_text(encoding='utf-8')) if request.stat().st_size <= 1024 * 1024 else {}
+                    if not isinstance(state, dict) or state.get('status') in ('queued', 'starting', 'running'):
+                        continue
+            except (OSError, ValueError, TypeError):
+                continue
+            result = release_decoded(folder, _WORKING, measure=not apply)
+            totals['freed_bytes' if apply else 'bytes'] += result['freed_bytes']
+            totals['left'] += len(result['left'])
+    return totals
+
+
+# What an interrupted share or editor export leaves beside a creation: its working copy,
+# written under a random name and renamed only when finished.
+_INTERRUPTED = re.compile(r'\.(?:share|editor-export|download)-[0-9a-f]{32}\.mp4')
+
+
+def clean_interrupted(output_directory, *, older=3600., now=None):
+    """Delete working copies of shares and exports that a closed program left behind.
+
+    Only files not written to for ``older`` seconds, so one being written now stays. A folder
+    that holds nothing else afterwards (an export that never finished) goes with it.
+    Returns the bytes freed.
+    """
+    try:
+        output_directory = checked_real_path(output_directory)
+    except AliasUnavailable:
+        return 0
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    now = time.time() if now is None else now
+    freed = 0
+    for path in sorted(root.glob('*/*/.*.mp4')):
+        try:
+            folder = path.parent
+            if (not _INTERRUPTED.fullmatch(path.name) or not _ID.fullmatch(folder.relative_to(root).as_posix())
+                    or not _plain(folder.parent) or not _plain(folder) or not _plain(path)):
+                continue
+            info = path.stat()
+            if now - info.st_mtime < older:
+                continue
+            path.unlink()
+            freed += info.st_size
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+        except OSError:
+            continue
+    return freed
+
+
+# A request that failed or was stopped keeps its folder (prompt, workflow, input copies) for its failure report; after
+# this long nothing offers that report any more, and the folder is listed for cleanup.
+FAILED_KEEP = 7 * 24 * 3600.
+
+
+def failed_runs(output_directory, *, now=None, older=FAILED_KEEP):
+    """Run folders of requests that ended without a video, untouched for ``older`` seconds and holding only what
+    FreeVideo writes, as [(id, bytes)]. A folder of a request that is still running, or of a saved video, is never one."""
+    try:
+        output_directory = checked_real_path(output_directory)
+    except AliasUnavailable:
+        return []
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    now = time.time() if now is None else now
+    rows = []
+    for folder in sorted(root.glob('*/*')):
+        try:
+            identity = folder.relative_to(root).as_posix()
+            if not _ID.fullmatch(identity) or not _plain(folder.parent) or not _plain(folder):
+                continue
+            state = json.loads((folder / 'comfy-request.json').read_text(encoding='utf-8'))
+            if not isinstance(state, dict) or state.get('status') not in ('failed', 'cancelled'):
+                continue
+            try:
+                _report(folder / 'video.mp4')
+                continue  # a saved video, whatever its request record says
+            except (_Unfinished, OSError, ValueError):
+                pass
+            newest = max(entry.stat().st_mtime for entry in [folder, *folder.iterdir()])
+            if now - newest < older or _foreign(folder):
+                continue
+            size = sum(path.stat().st_size for path in folder.rglob('*') if path.is_file() and not path.is_symlink())
+            rows.append((identity, size))
+        except (OSError, ValueError, AttributeError, AliasUnavailable):
+            continue
+    return rows
+
+
+def remove_failed_run(output_directory, identity, *, now=None, older=FAILED_KEEP):
+    """Remove one folder ``failed_runs`` lists, checked again first. Returns the bytes freed (0 when it stayed)."""
+    if identity not in {row[0] for row in failed_runs(output_directory, now=now, older=older)}:
+        return 0
+    folder = Path(checked_real_path(output_directory)).resolve() / 'FreeVideo' / identity
+    with _PENDING, _RELEASING:
+        facts = _work_facts(folder)
+        freed, left = _remove(folder)
+    _forget_works(folder.parent.parent, [facts])
+    return freed
+
+
+def release_later(output_directory):
+    """Have the next start finish a release that Windows kept open."""
+    from .monitoring import save
+    output_directory = checked_real_path(output_directory)
+    with _RELEASING:
+        save(Path(output_directory).resolve() / 'FreeVideo' / _RELEASED, dict(schema=1, pending=True))
+
+
+def release_earlier(output_directory):
+    """Once after updating, release the creations saved before completion did it.
+
+    Only finished creations of the creative workspace, which writes
+    comfy-request.json, and none that is being generated. Later starts repeat
+    it while a file Windows kept open is left.
+    """
+    from .monitoring import save
+    try:
+        output_directory = checked_real_path(output_directory)
+    except AliasUnavailable:
+        return None
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    marker = root / _RELEASED
+    if not root.is_dir():
+        return None
+    with _RELEASING:
+        # A marker Windows would not let save replace stays beside it as a
+        # staging copy; the release it asked for is still owed.
+        staged = sorted(root.glob(_RELEASED + '.*.tmp'))
+        try:
+            if not staged and json.loads(marker.read_text(encoding='utf-8')).get('pending') is not True:
+                return None
+        except (OSError, ValueError, AttributeError):
+            pass
+        totals = dict(videos=0, freed_bytes=0, left=0, skipped=0)
+        for path in sorted(root.glob('*/*/video.mp4')):
+            folder = path.parent
+            try:
+                if (not _ID.fullmatch(folder.relative_to(root).as_posix())
+                        or not _plain(folder.parent) or not _plain(folder)):
+                    continue
+                _report(path)
+                state = folder / 'comfy-request.json'
+                if state.stat().st_size > 1024 * 1024:
+                    continue
+                state = json.loads(state.read_text(encoding='utf-8'))
+                if not isinstance(state, dict) or state.get('status') in ('starting', 'running'):
+                    continue
+            except (OSError, ValueError, TypeError):
+                continue
+            result = release_decoded(folder)
+            totals['videos'] += result['freed_bytes'] > 0
+            totals['freed_bytes'] += result['freed_bytes']
+            totals['left'] += len(result['left'])
+            totals['skipped'] += result.get('skipped') == 'foreign-files'
+        # Stopped requests have no MP4 to find them by; their request record says they are over.
+        for path in sorted(root.glob('*/*/comfy-request.json')):
+            folder = path.parent
+            try:
+                if (not _ID.fullmatch(folder.relative_to(root).as_posix()) or (folder / 'video.mp4').exists()
+                        or not _plain(folder.parent) or not _plain(folder) or path.stat().st_size > 1024 * 1024):
+                    continue
+                state = json.loads(path.read_text(encoding='utf-8'))
+                if not isinstance(state, dict) or state.get('status') not in ('cancelled', 'failed'):
+                    continue
+            except (OSError, ValueError, TypeError):
+                continue
+            result = release_decoded(folder)
+            totals['videos'] += result['freed_bytes'] > 0
+            totals['freed_bytes'] += result['freed_bytes']
+            totals['left'] += len(result['left'])
+            totals['skipped'] += result.get('skipped') == 'foreign-files'
+        save(marker, dict(schema=1, pending=totals['left'] > 0, released_at=time.time(), **totals))
+        for path in staged:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    return totals
+
+
+def _queued_continuation_uses(path, output_directory, queue):
+    if queue is None:
+        return False
+    from .comfy_continuation import resolve_continue_from
+    for rows in queue.get_current_queue():
+        for entry in rows:
+            prompt = entry[2] if isinstance(entry, (list, tuple)) and len(entry) > 2 else None
+            if not isinstance(prompt, dict):
+                continue
+            for node in prompt.values():
+                if not isinstance(node, dict) or node.get('class_type') != 'FreeVideoGenerate':
+                    continue
+                inputs = node.get('inputs', {})
+                source = inputs.get('continue_from') if isinstance(inputs, dict) else None
+                if isinstance(source, (list, tuple)):
+                    # A connected path is resolved only by execution. Until
+                    # then the queue can still depend on this creation.
+                    return True
+                if not isinstance(source, str) or not source:
+                    continue
+                try:
+                    # Saved creations live under output; its absolute paths
+                    # and relative history names share the node's resolver.
+                    resolved = resolve_continue_from(source, output_directory, output_directory)
+                except ValueError:
+                    continue
+                if Path(resolved) == path:
+                    return True
+    return False
+
+
+def _request_states(root, cache):
+    """The small request records of every run, re-read only when their file changed."""
+    rows = []
+    for state_path in root.glob('*/*/comfy-request.json'):
+        try:
+            info = state_path.stat()
+            key = (info.st_mtime_ns, info.st_size, getattr(info, 'st_ino', 0))
+            known = cache.get(state_path)
+            if known is None or known[0] != key:
+                state = json.loads(state_path.read_text(encoding='utf-8')) if info.st_size <= 1024 * 1024 else {}
+                known = cache[state_path] = (key, state)
+        except (OSError, ValueError):
+            continue
+        rows.append(known[1])
+    return rows
+
+
+class RecordUnsaved(Exception):
+    """The record that names a folder before it moves could not be written, so nothing moved."""
+
+
+def _trash_creation(output_directory, identity, queue, cache, announce=None):
+    """Check that a creation may go, and rename its folder into FreeVideo/.deleted.
+
+    Returns the trash folder and the content identifier of its video. Nothing is
+    deleted yet: the caller removes the folder when it is sure it is not wanted back.
+    ``announce(target, identifier)`` runs under the same locks just before the move, so a
+    caller can write down where the folder is going first; if it raises, nothing moves.
+    """
+    path = _video(output_directory, identity)
+    _report(path)
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    folder = path.parent
+    if folder.parent.parent != root or not _plain(folder.parent) or not _plain(folder):
+        raise DeleteRefused('not-freevideo')
+    # Not while the startup release is deleting files in this folder. _PENDING comes first,
+    # as in undo_deleted, so the move and its in-flight mark cannot interleave with a purge.
+    with _PENDING, _RELEASING, (queue.mutex if queue is not None else nullcontext()):
+        from .comfy_editor import reference_users
+        try:
+            users = reference_users(output_directory, identity)
+        except (OSError, ValueError):
+            raise DeleteRefused('editor-unavailable') from None
+        if users:
+            raise DeleteRefused('editor-in-use', users)
+        kept = _foreign(folder)
+        if kept:
+            raise DeleteRefused('foreign-files', kept)
+        if _queued_continuation_uses(path, output_directory, queue):
+            raise DeleteRefused('continuation-in-use')
+        # A second pass of this preview may be reading its first pass right now.
+        for state in _request_states(root, cache):
+            if not isinstance(state, dict) or state.get('status') not in ('queued', 'starting', 'running'):
+                continue
+            source = state.get('upscaled_preview')
+            if isinstance(source, str) and Path(source).resolve() == path:
+                raise DeleteRefused('in-use')
+            command = state.get('command', [])
+            if isinstance(command, list) and '--continue-from' in command:
+                index = command.index('--continue-from') + 1
+                if index < len(command) and isinstance(command[index], str) and Path(command[index]).resolve() == path:
+                    raise DeleteRefused('continuation-in-use')
+        # Content addressing needs the MP4 while it still exists. Optional
+        # cleanup may fail, including in lightweight CI without PyAV.
+        identifier = None
+        try:
+            from .continuation_store import video_id
+            identifier = video_id(path)
+        except ModuleNotFoundError as error:
+            if error.name not in ('av', __package__ + '.continuation_store'):
+                raise
+        except Exception as error:
+            logging.warning('[FreeVideo] Continuation cleanup failed (%s).', type(error).__name__)
+        trash = root / '.deleted'
+        trash.mkdir(exist_ok=True)
+        if not _plain(trash):
+            raise DeleteRefused('not-freevideo')
+        target = trash / ('%s-%d' % (identity.replace('/', '-'), time.time_ns()))
+        if announce is not None:
+            announce(target, identifier)
+        try:
+            folder.rename(target)
+        except OSError as error:
+            raise DeleteRefused('in-use') from error
+        _INFLIGHT.add(target.name)
+    return target, identifier
+
+
+def _forget(identifiers, root):
+    """Drop what only a deleted creation needed: its continuation data and reusable results."""
+    for identifier in identifiers:
+        if identifier is None:
+            continue
+        try:
+            from .continuation_store import delete_id
+            delete_id(identifier)
+        except Exception as error:
+            logging.warning('[FreeVideo] Continuation cleanup failed (%s).', type(error).__name__)
+
+
+def _work_facts(folder):
+    """What a work's run folder says about records kept elsewhere: ComfyUI's request id, the input-cache receipts it
+    used, its run id, and a keyed hash of its prompt. Read before the folder goes."""
+    facts = dict(run=Path(folder).name.split('-')[-2] if _TRASH_NAME.fullmatch(Path(folder).name) else Path(folder).name,
+                 prompt_id=None, receipts=[], prompt=None)
+    try:
+        state = json.loads((Path(folder) / 'comfy-request.json').read_text(encoding='utf-8'))
+        if isinstance(state.get('comfy_prompt_id'), str):
+            facts['prompt_id'] = state['comfy_prompt_id']
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        report = json.loads((Path(folder) / 'video.request.json').read_text(encoding='utf-8'))
+        rows = (report.get('input_cache') or {}).get('receipts') or []
+        facts['receipts'] = [row for row in rows if isinstance(row, str)][:256]
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        from .private_store import name
+        text = (Path(folder) / 'prompt.txt').read_text(encoding='utf-8')
+        if text.strip():
+            facts['prompt'] = name('prompt', text.strip())
+    except (OSError, ValueError):
+        pass
+    return facts
+
+
+def _kept_facts(root):
+    """The receipts and prompt hashes the works still in the library (or still undoable) use."""
+    from .private_store import name
+    receipts, prompts = set(), set()
+    for folder in [*root.glob('*/*'), *(root / '.deleted').glob('*')]:
+        try:
+            if not folder.is_dir() or folder.is_symlink():
+                continue
+            report = folder / 'video.request.json'
+            if report.is_file():
+                rows = (json.loads(report.read_text(encoding='utf-8')).get('input_cache') or {}).get('receipts') or []
+                receipts.update(row for row in rows if isinstance(row, str))
+            prompt = folder / 'prompt.txt'
+            if prompt.is_file():
+                text = prompt.read_text(encoding='utf-8').strip()
+                if text:
+                    prompts.add(name('prompt', text))
+        except (OSError, ValueError, AttributeError):
+            continue
+    # A picture that still has the same prompt keeps it in the history too.
+    try:
+        import folder_paths
+        records = json.loads((Path(folder_paths.get_input_directory()) / 'freevideo-image' / 'image-records.json').read_text(encoding='utf-8'))
+        prompts.update(row['prompt_hash'] for row in records.values()
+                       if isinstance(row, dict) and isinstance(row.get('prompt_hash'), str))
+    except Exception:
+        pass
+    return receipts, prompts
+
+
+def _forget_works(root, facts):
+    """After works are removed for good: ComfyUI's record of each request, the cached encodings only they used, and
+    a note of their prompts so the page forgets them too unless a kept work uses the same prompt."""
+    if not facts:
+        return
+    try:
+        # The report number of each work, which named its run folder.
+        from .comfy_progress import REPORTS
+        REPORTS.forget(root, {fact['run'] for fact in facts})
+    except Exception:
+        logging.warning('[FreeVideo] Could not forget the report numbers of a deleted creation.', exc_info=True)
+    try:
+        kept_receipts, kept_prompts = _kept_facts(root)
+    except OSError:
+        return
+    from . import private_refs, private_store
+    from .paths import data_root
+    cache_root = data_root() / 'input-cache'
+    for fact in facts:
+        if re.fullmatch('[0-9a-f]{32}', fact['run'] or ''):
+            private_refs.release_owner('video:' + fact['run'])
+    for receipt in {row for fact in facts for row in fact['receipts']} - kept_receipts:
+        try:
+            private_store.evict(cache_root, receipt)
+        except OSError:
+            pass
+    private_store.forget_prompts({fact['prompt'] for fact in facts if fact['prompt']} - kept_prompts)
+    ids = {fact['prompt_id'] for fact in facts if fact['prompt_id']}
+    runs = {fact['run'] for fact in facts if re.fullmatch('[0-9a-f]{32}', fact['run'] or '')}
+    from .comfy_chain import discard_chains
+    discard_chains(runs)  # a long video's chain record and its seam sound go with it
+    try:
+        from server import PromptServer
+        server = PromptServer.instance
+        queue = server.prompt_queue
+    except (ImportError, AttributeError):
+        return
+    jobs = getattr(server, '_freevideo_agent', None)
+    if jobs is not None and runs:
+        try:
+            jobs.forget_works(sorted(runs))  # an Agent job that made the work keeps no prompt or pictures of it
+        except Exception:
+            logging.warning('[FreeVideo] Could not update the Agent jobs of a deleted creation.', exc_info=True)
+    try:
+        with queue.mutex:
+            history = dict(queue.history)
+        for prompt_id, entry in history.items():
+            if prompt_id in ids or (runs and any(run in json.dumps(entry, default=str) for run in runs)):
+                queue.delete_history_item(prompt_id)
+    except Exception:
+        logging.warning('[FreeVideo] Could not remove ComfyUI\'s record of a deleted creation.', exc_info=True)
+
+
+def _forget_results(identities, root):
+    """A result-cache row naming a deleted creation can no longer be reused, and the record of finished jobs in the
+    output folder keeps no line naming it."""
+    from . import jobs_journal
+    jobs_journal.forget(identities, root=root.parent)
+    for index in (root / '.result-cache').glob('*.json'):
+        try:
+            if index.stat().st_size <= 1024 * 1024 and json.loads(index.read_text(encoding='utf-8')).get('id') in identities:
+                index.unlink()
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
+
+
+def delete_video(output_directory, identity, *, queue=None):
+    """Delete one saved creation: its whole run folder, only when FreeVideo wrote everything in it.
+
+    The folder is first renamed into FreeVideo/.deleted, so it leaves the
+    library at once, or, when Windows still has a file open, nothing changes.
+    """
+    try:
+        output_directory = checked_real_path(output_directory)
+    except AliasUnavailable as error:
+        raise DeleteRefused('not-freevideo') from error
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    target, identifier = _trash_creation(output_directory, identity, queue, {})
+    try:
+        _forget([identifier], root)
+        facts = _work_facts(target)
+        freed, left = _remove(target)
+        _forget_results({identity}, root)
+        _forget_works(root, [facts])
+    finally:
+        with _PENDING:
+            _INFLIGHT.discard(target.name)
+    # Finish earlier deletions that Windows had kept open.
+    freed += _purge_trash(root / '.deleted', keep={target.name})
+    return dict(id=identity, freed_bytes=freed, left=len(left))
+
+
+# Several creations deleted together stay in FreeVideo/.deleted for a few seconds, so
+# one click can bring them back. A manifest beside them names what to restore or remove.
+UNDO_SECONDS = 10
+_UNDO_GRACE = 3          # the server waits a little longer than the page shows
+_MANIFEST = '.pending-'
+_BATCH_NAME = re.compile(r'[0-9]{1,20}-[0-9a-f]{6}')
+# A folder in the trash is named by the id it had, with its slash a dash, and the time it moved.
+_TRASH_NAME = re.compile(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{32}-\d+')
+_PENDING = threading.Lock()
+MAX_BATCH = 500
+MAX_EXTEND = 200
+_SESSION = os.urandom(6).hex()
+# Batch names taken in the last hour, and those whose deletion is still moving folders.
+# A name is taken before the first folder moves, so a repeated or parallel request with it
+# is refused instead of overwriting the other's record. Guarded by _PENDING.
+_CLAIMED = {}
+_ACTIVE = set()
+_CLAIM_SECONDS = 3600
+_CLAIM_LIMIT = 4096
+# Folders already moved into FreeVideo/.deleted whose batch record is not written yet.
+# A purge running at the same time must leave them alone. Guarded by _PENDING.
+_INFLIGHT = set()
+
+
+def _pending_manifests(trash):
+    rows = []
+    try:
+        names = sorted(path for path in trash.iterdir() if path.name.startswith(_MANIFEST) and path.suffix == '.json')
+    except OSError:
+        return rows
+    for path in names:
+        try:
+            value = json.loads(path.read_text(encoding='utf-8'))
+            if isinstance(value, dict) and isinstance(value.get('items'), list):
+                rows.append((path, value))
+        except (OSError, ValueError):
+            continue
+    return rows
+
+
+def _claim(token, manifest):
+    with _PENDING:
+        now = time.monotonic()
+        for name in [name for name, taken in _CLAIMED.items() if now - taken > _CLAIM_SECONDS]:
+            del _CLAIMED[name]
+        while len(_CLAIMED) >= _CLAIM_LIMIT:
+            del _CLAIMED[next(iter(_CLAIMED))]
+        if token in _CLAIMED or manifest.exists():
+            raise ValueError('Invalid selection')
+        _CLAIMED[token] = now
+        _ACTIVE.add(token)
+
+
+def _hold(root, tokens, due):
+    """Set the end of the undo time of batches an earlier request of the same click already made.
+
+    Returns the batches whose record could not be written; those keep the time they had.
+    """
+    from .monitoring import save
+    failed = []
+    with _PENDING:
+        for token in tokens:
+            path = root / '.deleted' / (_MANIFEST + token + '.json')
+            try:
+                value = json.loads(path.read_text(encoding='utf-8'))
+                current = float(value['due'])
+                if value.get('restore') or time.time() >= current:
+                    continue
+                value['due'] = due
+                save(path, value)
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+            except OSError:
+                if path.exists():
+                    failed.append(token)
+    return failed
+
+
+def _recover(root, path, value):
+    """Try again to put back what a failed delete could not; never removes anything.
+
+    The caller holds _PENDING and _RELEASING."""
+    from .monitoring import save
+    rows = [item for item in value['items'] if isinstance(item, dict) and isinstance(item.get('id'), str)
+            and _ID.fullmatch(item['id']) and isinstance(item.get('name'), str)
+            and _TRASH_NAME.fullmatch(item['name'])]
+    failed = set(_restore_moved(root, rows))
+    left = [row for row in rows if row['id'] in failed]
+    try:
+        if left:
+            if len(left) != len(value['items']):
+                save(path, dict(value, items=left))
+        else:
+            path.unlink()
+    except OSError:
+        logging.warning('FreeVideo could not update the record of creations it still has to put back.')
+        return
+    _INFLIGHT.difference_update(row['name'] for row in rows if row['id'] not in failed)
+
+
+def _purge_trash(trash, keep=()):
+    """Remove folders that earlier deletions left behind, except those a batch may still restore.
+
+    The folders to remove are chosen while no batch is moving one in, so a folder
+    that is on its way into a batch record is never taken for left-over rubbish.
+    """
+    freed = 0
+    try:
+        with _PENDING:
+            held = set(keep) | _INFLIGHT
+            for _, value in _pending_manifests(trash):
+                held.update(str(item.get('name')) for item in value['items'] if isinstance(item, dict))
+            leftovers = [earlier for earlier in trash.iterdir() if earlier.name not in held]
+        facts = []
+        for earlier in leftovers:
+            try:
+                if _plain(earlier) and earlier.is_dir():
+                    facts.append(_work_facts(earlier))
+                    freed += _remove(earlier)[0]
+            except OSError:
+                continue
+        _forget_works(trash.parent, facts)
+    except OSError:
+        pass
+    return freed
+
+
+def _restore_moved(root, rows):
+    """Put folders back where they were taken from; returns the ids that could not be restored."""
+    trash, failed = root / '.deleted', []
+    for row in rows:
+        try:
+            source, folder = trash / row['name'], root / row['id']
+            # Named before it moved: a folder that never left, or is already back, needs nothing.
+            if not os.path.lexists(source):
+                continue
+            if folder.exists():
+                raise OSError
+            folder.parent.mkdir(parents=True, exist_ok=True)
+            source.rename(folder)
+        except OSError:
+            failed.append(row['id'])
+    return failed
+
+
+def delete_videos(output_directory, identities, *, queue=None, batch=None, extend=()):
+    """Delete several creations at once, each under the single delete's checks.
+
+    A creation that is in use is skipped with its reason, never forced. The rest
+    leave the library at once and are removed for good ``UNDO_SECONDS`` later;
+    ``undo_deleted`` brings them back until then. ``batch`` lets the page name the batch
+    before asking, so a page that is reloaded while the request runs can still undo it. A name
+    is used once: a second request with it is refused. ``extend`` names the earlier batches of
+    the same click; their undo time is kept open while this request runs and ends with it.
+    """
+    if batch is not None and not (isinstance(batch, str) and _BATCH_NAME.fullmatch(batch)):
+        raise ValueError('Invalid selection')
+    if (not isinstance(identities, list) or not identities or len(identities) > MAX_BATCH
+            or not all(isinstance(identity, str) for identity in identities)):
+        raise ValueError('Invalid selection')
+    if (not isinstance(extend, (list, tuple)) or len(extend) > MAX_EXTEND
+            or not all(isinstance(name, str) and _BATCH_NAME.fullmatch(name) for name in extend)):
+        raise ValueError('Invalid selection')
+    try:
+        output_directory = checked_real_path(output_directory)
+    except AliasUnavailable as error:
+        raise DeleteRefused('not-freevideo') from error
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    finish_deleted(output_directory)
+    cache, moved, skipped = {}, [], []
+    from .monitoring import save
+    from .comfy_chain import segment_identities
+    # A long video's hidden part videos leave with it, in the same undo batch; one that is not ours to delete
+    # (in use, not FreeVideo's) is skipped as any other.
+    identities = list(dict.fromkeys([*identities, *segment_identities(identities)]))
+    token = batch or '%d-%s' % (time.time_ns(), os.urandom(3).hex())
+    manifest = root / '.deleted' / (_MANIFEST + token + '.json')
+    _claim(token, manifest)
+    if extend:
+        _hold(root, extend, time.time() + 120)
+
+    def announce(row):
+        # Written before the folder moves, as a record that only puts things back: if the move, the next
+        # step, a later write or this process fails, whatever sits in the trash is named and never removed.
+        # The caller holds _PENDING.
+        def write(target, identifier):
+            try:
+                save(manifest, dict(schema=1, due=0, restore=True, session=_SESSION,
+                                    items=moved + [dict(row, name=target.name, continuation=identifier)]))
+            except OSError as error:
+                raise RecordUnsaved from error
+        return write
+
+    def publish(due):
+        # Every folder is in the trash and named; from now on the record removes them when the time is over.
+        with _PENDING:
+            save(manifest, dict(schema=1, due=due, born=time.time(), session=_SESSION, items=moved))
+            _INFLIGHT.difference_update(row['name'] for row in moved)
+
+    try:
+        for identity in dict.fromkeys(identities):
+            try:
+                target, identifier = _trash_creation(output_directory, identity, queue, cache,
+                                                     announce=announce(dict(id=identity)))
+            except DeleteRefused as error:
+                skipped.append(dict(id=identity, reason=error.reason, kept=error.kept[:20]))
+            except RecordUnsaved:
+                skipped.append(dict(id=identity, reason='unsaved', kept=[]))
+            except (FileNotFoundError, NotADirectoryError, ValueError):
+                # The creation is already gone from disk (or was never complete): it only has to leave the page.
+                skipped.append(dict(id=identity, reason='unavailable', kept=[]))
+            except OSError:
+                # Still there but not readable or writable (permissions, read-only disk): it stays, and says so.
+                skipped.append(dict(id=identity, reason='failed', kept=[]))
+            else:
+                moved.append(dict(id=identity, name=target.name, continuation=identifier))
+        if moved:
+            # The undo time starts when the last creation has left the library.
+            publish(time.time() + UNDO_SECONDS + _UNDO_GRACE)
+        else:
+            with _PENDING:
+                try:
+                    manifest.unlink()
+                except OSError:
+                    pass
+    except BaseException:
+        with _PENDING, _RELEASING:
+            failed = set(_restore_moved(root, moved))
+            _INFLIGHT.difference_update(row['name'] for row in moved)
+            try:
+                if not failed:
+                    manifest.unlink()
+                else:
+                    logging.warning('FreeVideo could not put back %d creations after a failed delete.', len(failed))
+                    # What could not be put back stays named by a record that only restores it, until it can be.
+                    save(manifest, dict(schema=1, due=0, restore=True, session=_SESSION,
+                                        items=[row for row in moved if row['id'] in failed]))
+            except OSError:
+                # The record already on disk was written before the moves and says the same.
+                pass
+        raise
+    finally:
+        # The earlier chunks get their normal time before this one is reported as finished.
+        if extend:
+            _hold(root, extend, time.time() + UNDO_SECONDS + _UNDO_GRACE)
+        with _PENDING:
+            _ACTIVE.discard(token)
+    if moved:
+        timer = threading.Timer(UNDO_SECONDS + _UNDO_GRACE + 1, _finish_quietly, (output_directory,))
+        timer.daemon = True
+        timer.start()
+    return dict(batch=token if moved else None, undo_seconds=UNDO_SECONDS,
+                deleted=[row['id'] for row in moved], skipped=skipped)
+
+
+def _finish_quietly(output_directory):
+    try:
+        finish_deleted(output_directory)
+    except Exception:
+        logging.warning('FreeVideo could not finish removing deleted creations.', exc_info=True)
+
+
+def finish_deleted(output_directory, *, everything=False):
+    """Remove for good the batches whose undo time is over (all of them with ``everything``).
+
+    Also what the continuation store and the result cache kept for them, and any
+    folder an earlier deletion could not remove. Returns the bytes freed.
+    """
+    root = Path(checked_real_path(output_directory)).resolve() / 'FreeVideo'
+    trash = root / '.deleted'
+    if not trash.is_dir() or not _plain(trash):
+        return 0
+    claimed, recover = [], []
+    with _PENDING:
+        for path, value in _pending_manifests(trash):
+            try:
+                # A batch still moving folders is not touched.
+                if path.name[len(_MANIFEST):-len('.json')] in _ACTIVE or any(
+                        isinstance(item, dict) and item.get('name') in _INFLIGHT for item in value['items']):
+                    continue
+                if value.get('restore'):
+                    recover.append((path, value))
+                # Starting up, only what an earlier session left is finished; a batch of this one is still undoable.
+                elif (everything and value.get('session') != _SESSION) or time.time() >= float(value.get('due', 0)):
+                    path.unlink()
+                    claimed.append(value['items'])
+            except (OSError, ValueError, TypeError):
+                continue
+    if recover:
+        with _PENDING, _RELEASING:
+            for path, value in recover:
+                _recover(root, path, value)
+    freed = 0
+    for items in claimed:
+        rows = [item for item in items if isinstance(item, dict) and isinstance(item.get('name'), str)
+                and _TRASH_NAME.fullmatch(item['name'])]
+        _forget([item.get('continuation') for item in rows], root)
+        facts = []
+        for item in rows:
+            folder = trash / item['name']
+            if folder.name == item['name'] and _plain(folder) and folder.is_dir():
+                facts.append(_work_facts(folder))
+                freed += _remove(folder)[0]
+        _forget_results({item.get('id') for item in rows}, root)
+        _forget_works(root, facts)
+    return freed + _purge_trash(trash)
+
+
+class UndoBusy(ValueError):
+    """The batch is still being deleted; asking again once that is done works."""
+
+
+def undo_deleted(output_directory, token):
+    """Put a batch back while its undo time lasts; raises ValueError('expired') afterwards."""
+    output_directory = checked_real_path(output_directory)
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    trash = root / '.deleted'
+    if not isinstance(token, str) or not _BATCH_NAME.fullmatch(token):
+        raise ValueError('Invalid batch')
+    manifest = trash / (_MANIFEST + token + '.json')
+    restored, lost = [], []
+    from .monitoring import save
+    with _PENDING, _RELEASING:
+        if token in _ACTIVE:
+            raise UndoBusy('busy')
+        try:
+            value = json.loads(manifest.read_text(encoding='utf-8'))
+            if value.get('restore') or time.time() >= float(value['due']):
+                raise ValueError('expired')
+            items = [item for item in value['items'] if isinstance(item, dict)]
+        except (OSError, KeyError, TypeError, AttributeError):
+            raise ValueError('expired') from None
+        rows = [item for item in items if isinstance(item.get('id'), str) and _ID.fullmatch(item['id'])
+                and isinstance(item.get('name'), str) and _TRASH_NAME.fullmatch(item['name'])]
+        # From here the record only puts things back, so whatever fails or stops half way is never removed.
+        try:
+            save(manifest, dict(value, restore=True, due=0, items=items))
+        except OSError:
+            logging.warning('FreeVideo could not record an undo, so nothing was restored.')
+            return dict(restored=[], lost=[item.get('id') for item in items])
+        for item in items:
+            if item not in rows:
+                lost.append(item.get('id'))
+                continue
+            try:
+                source, folder = trash / item['name'], root / item['id']
+                if folder.exists() or not _plain(source):
+                    raise OSError
+                folder.parent.mkdir(parents=True, exist_ok=True)
+                source.rename(folder)
+                restored.append(item['id'])
+            except OSError:
+                lost.append(item['id'])
+        # What could not come back stays named by the record, to be put back later and never removed.
+        kept = [item for item in items if item.get('id') in lost]
+        try:
+            if kept:
+                save(manifest, dict(value, restore=True, due=0, items=kept))
+            else:
+                manifest.unlink()
+        except OSError:
+            pass
+    return dict(restored=restored, lost=lost)
+
+
+def _checked_tokens(tokens):
+    if (not isinstance(tokens, list) or len(tokens) > MAX_EXTEND
+            or not all(isinstance(name, str) and _BATCH_NAME.fullmatch(name) for name in tokens)):
+        raise ValueError('Invalid selection')
+    return list(dict.fromkeys(tokens))
+
+
+def undo_state(output_directory, tokens):
+    """What the server says about each batch: ``busy`` (folders still moving), ``ready`` with the
+    seconds left to undo it, or ``gone`` (finished, restored, expired or never made)."""
+    tokens = _checked_tokens(tokens)
+    root = Path(checked_real_path(output_directory)).resolve() / 'FreeVideo'
+    states = {}
+    with _PENDING:
+        for token in tokens:
+            if token in _ACTIVE:
+                states[token] = dict(state='busy')
+                continue
+            try:
+                value = json.loads((root / '.deleted' / (_MANIFEST + token + '.json')).read_text(encoding='utf-8'))
+                left = float(value['due']) - time.time() - _UNDO_GRACE
+                if value.get('restore') or left <= 0:
+                    raise ValueError
+                states[token] = dict(state='ready', seconds=left, count=len(value['items']))
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                states[token] = dict(state='gone')
+    return states
+
+
+def hold_deleted(output_directory, tokens, *, running):
+    """Keep earlier batches of one click undoable while its next request runs (``running``), or
+    give them the normal undo time again once it is over; returns ``undo_state``.
+
+    Raises OSError when a batch's record could not be written: the caller must not go on as if it was held.
+    """
+    tokens = _checked_tokens(tokens)
+    if not isinstance(running, bool):
+        raise ValueError('Invalid selection')
+    root = Path(checked_real_path(output_directory)).resolve() / 'FreeVideo'
+    seconds = 120 if running else UNDO_SECONDS + _UNDO_GRACE
+    failed = _hold(root, tokens, time.time() + seconds)
+    states = undo_state(output_directory, tokens)
+    if any(row['state'] == 'ready' for row in states.values()):
+        # The request that would have ended their time may never come: check once the time is over.
+        timer = threading.Timer(seconds + 1, _finish_quietly, (output_directory,))
+        timer.daemon = True
+        timer.start()
+    if failed:
+        raise OSError('Could not keep the batches')
+    return states
+
+
+def folder_sizes(output_directory, identities):
+    """Bytes each creation's whole run folder holds, links not followed; unknown ids are left out."""
+    if not isinstance(identities, list) or len(identities) > MAX_BATCH:
+        raise ValueError('Invalid selection')
+    root = Path(checked_real_path(output_directory)).resolve() / 'FreeVideo'
+    sizes = {}
+    for identity in identities:
+        if not isinstance(identity, str) or not _ID.fullmatch(identity):
+            continue
+        folder = root / identity
+        total = 0
+        try:
+            if not _plain(folder):
+                continue
+            for parent, folders, files in os.walk(folder):
+                folders[:] = [name for name in folders if _plain(Path(parent) / name)]
+                for name in files:
+                    try:
+                        info = os.lstat(Path(parent) / name)
+                        total += info.st_size if stat.S_ISREG(info.st_mode) else 0
+                    except OSError:
+                        pass
+        except OSError:
+            continue
+        sizes[identity] = total
+    return sizes
+
+
+def video_folder(output_directory, identity=None):
+    """The folder holding the saved videos, or one saved video's own folder when `identity` names it."""
+    root = Path(output_directory).resolve() / 'FreeVideo'
+    if identity is None:
+        folder = root
+    else:
+        if not isinstance(identity, str) or not _ID.fullmatch(identity):
+            raise ValueError('Invalid video identity')
+        folder = root / identity
+        if folder.is_symlink() or is_junction(folder):
+            raise ValueError('Invalid video identity')
+    if not folder.is_dir():
+        if identity is None and Path(output_directory).is_dir():
+            return Path(output_directory).resolve()  # nothing generated yet: show where videos will be saved
+        raise FileNotFoundError(str(folder))
+    return folder
+
+
+def show_folder(folder):
+    """Show a folder in this computer's file manager; False when that cannot be done."""
+    if windows():
+        failure = []
+
+        def show():
+            try:
+                os.startfile(str(folder))
+            except OSError as error:
+                failure.append(error)
+        # The shell can block for good without a desktop session (SSH, service); never wait on it here.
+        thread = threading.Thread(target=show, name='library-open-folder', daemon=True)
+        thread.start()
+        thread.join(2)
+        return thread.is_alive() is False and not failure
+    from .windows_ux import open_folder
+    return open_folder(folder)
+
+
+def register():
+    from aiohttp import web
+    import folder_paths
+    from server import PromptServer
+    server = PromptServer.instance
+    if server is None or getattr(server, '_freevideo_library', False):
+        return
+    server._freevideo_library = True
+    thumbnails = asyncio.Semaphore(1)
+
+    def release():
+        try:
+            result = release_earlier(folder_paths.get_output_directory())
+            if result and result['freed_bytes']:
+                logging.info('FreeVideo freed %.1f GB of decoded frames and audio from %d earlier videos.',
+                             result['freed_bytes'] / 1e9, result['videos'])
+        except Exception:
+            logging.warning('FreeVideo could not free the decoded files of earlier videos.', exc_info=True)
+        try:
+            freed = clean_interrupted(folder_paths.get_output_directory())
+            if freed:
+                logging.info('FreeVideo removed %.1f MB left by an interrupted share or export.', freed / 1e6)
+        except Exception:
+            logging.warning('FreeVideo could not remove files left by an interrupted share or export.', exc_info=True)
+        try:
+            # A deletion the last session did not finish: its undo time is long over.
+            finish_deleted(folder_paths.get_output_directory(), everything=True)
+        except Exception:
+            logging.warning('FreeVideo could not finish removing deleted creations.', exc_info=True)
+        try:
+            # Report numbers of works an earlier version deleted without forgetting them.
+            from .comfy_progress import REPORTS
+            REPORTS.forget(Path(folder_paths.get_output_directory()).resolve() / 'FreeVideo')
+        except Exception:
+            logging.warning('FreeVideo could not tidy the report index.', exc_info=True)
+    threading.Thread(target=release, name='freevideo-release-decoded', daemon=True).start()
+
+    @server.routes.get('/freevideo/sampling-estimate')
+    async def sampling_estimate(request):
+        from .comfy_bridge import installation
+        from .effort_forecast import estimate, local_records
+        from .geometry import geometry
+        try:
+            canvas = geometry(int(request.query['width']), int(request.query['height']),
+                              seconds=float(request.query['seconds']))
+            from .two_pass import SCALES, plan, sampling_canvas
+            canvas = sampling_canvas(canvas)[0]
+            task = request.query.get('task', 't2va')
+            _, machine = installation()
+            device = machine.get('device_identity') if machine.get('device_backend') == 'mps' else machine.get('gpu_uuid')
+            rows = await asyncio.to_thread(local_records, folder_paths.get_output_directory(), device)
+            adapters = request.query.get('adapters') == '1'
+            # A small canvas runs in one pass whatever the switch says. A cached
+            # level is keyed "<steps>:<cache>", a two-pass upscale factor other
+            # than 2 "<steps>x<factor>". Without a run of it, plain runs stand
+            # in: the first-block cache is counted at full time, since the
+            # planner may not keep it on this card.
+            share = {'fbcache': 1.}
+
+            def one(steps, cache, enabled, factor):
+                sampled = plan(canvas, enabled, task, base_steps=steps, scale=factor)
+                return estimate(rows, canvas, base_steps=steps, two_pass=sampled['enabled'], task=task,
+                                adapters=adapters, step_cache=cache, cache_share=share.get(cache),
+                                upscale_factor=sampled.get('scale', 2))
+            result = {name: {(str(steps) + (':' + cache if cache else '') + ('x%g' % factor if factor != 2 else '')):
+                             one(steps, cache, enabled, factor)
+                             for steps, cache, factor in ([(8, None, factor) for factor in SCALES] if enabled else
+                                                          ((8, None, 2), (12, None, 2), (16, None, 2), (20, None, 2),
+                                                           (20, 'easycache-av', 2), (20, 'fbcache', 2)))}
+                      for name, enabled in (('single', False), ('two_pass', True))}
+            return web.json_response(result, headers={'Cache-Control': 'no-store'})
+        except (OSError, ValueError, TypeError, KeyError):
+            # Estimation is advisory; installation and generation remain usable.
+            return web.json_response({}, headers={'Cache-Control': 'no-store'})
+
+    @server.routes.get('/freevideo/request-assets')
+    async def request_assets(request):
+        """What this request still needs downloaded; advisory and read-only."""
+        from .comfy_bridge import installation
+        from .request_assets import inspect
+        query = request.query
+        try:
+            root, machine = installation()
+            value = dict(width=int(query['width']), height=int(query['height']), seconds=float(query['seconds']),
+                         task=query.get('task', 't2va'), base_steps=int(query.get('base_steps', '8')),
+                         refine_steps=int(query.get('refine_steps', '3')), two_pass=query.get('two_pass', '1') == '1',
+                         enhance=query.get('enhance') == '1', loras=query.getall('lora', [])[:32])
+            refs = []
+            for item in query.getall('ref', [])[:32]:
+                kind, _, name = item.partition(':')
+                parts = Path(name).parts
+                silent = kind == 'video-silent'
+                if (kind in ('image', 'video', 'audio') or silent) and parts and not Path(name).is_absolute() and '..' not in parts:
+                    refs.append(dict(kind='video', path=name, sound=False) if silent else dict(kind=kind, path=name))
+            if refs:
+                # The generation path's own classification decides the tables (audio track in a video).
+                value.update(references=refs, media_base=folder_paths.get_input_directory())
+            names = await asyncio.to_thread(folder_paths.get_filename_list, 'loras') if value['loras'] else None
+            result = await asyncio.to_thread(inspect, root, machine, value, lora_names=names)
+            return web.json_response(result, headers={'Cache-Control': 'no-store'})
+        except (OSError, ValueError, TypeError, KeyError):
+            # Advisory: generation still reports whatever it needs.
+            return web.json_response({}, headers={'Cache-Control': 'no-store'})
+
+    @server.routes.get('/freevideo/library')
+    async def library(request):
+        try:
+            favorite = request.query.get('favorite')
+            if favorite is not None:
+                if favorite not in ('true', 'false', '1', '0'):
+                    raise ValueError('Invalid favorite filter')
+                favorite = favorite in ('true', '1')
+            rows = await asyncio.to_thread(list_videos, folder_paths.get_output_directory(),
+                                           before=request.query.get('before'),
+                                           limit=int(request.query.get('limit', '24')), favorite=favorite)
+            return web.json_response(rows, headers={'Cache-Control': 'no-store'})
+        except ValueError as error:
+            raise web.HTTPBadRequest(text=str(error)) from error
+        except OSError as error:
+            # The output folder is offline or not readable: say which, so the page can name the cause.
+            return web.json_response(dict(reason=file_reason(error, write=False)), status=500)
+
+    @server.routes.get('/freevideo/library/prompt')
+    async def prompt(request):
+        try:
+            text = await asyncio.to_thread(prompt_text, folder_paths.get_output_directory(), request.query.get('id'))
+        except (OSError, ValueError, UnicodeDecodeError):
+            raise web.HTTPNotFound(text='Prompt unavailable') from None
+        # The seed is optional: without it, reusing the settings fills only the prompt and the size.
+        seed = await asyncio.to_thread(prompt_seed, folder_paths.get_output_directory(), request.query.get('id'))
+        return web.json_response(dict(prompt=text, **({} if seed is None else {'seed': seed})), headers={'Cache-Control': 'no-store'})
+
+    @server.routes.post('/freevideo/library/favorite')
+    async def favorite(request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict) or type(body.get('favorite')) is not bool:
+                raise ValueError('Invalid favorite state')
+            result = await asyncio.to_thread(set_favorite, folder_paths.get_output_directory(),
+                                             body.get('id'), body['favorite'])
+        except (ValueError, TypeError) as error:
+            raise web.HTTPBadRequest(text=str(error)) from error
+        except FileNotFoundError:
+            raise web.HTTPNotFound(text='Saved video unavailable') from None
+        except OSError:
+            # The creation is there but its favorite could not be written; another try may work.
+            raise web.HTTPInternalServerError(text='Could not save the favorite') from None
+        return web.json_response(result, headers={'Cache-Control': 'no-store'})
+
+    @server.routes.get('/freevideo/library/working-files')
+    async def working_files(request):
+        try:
+            result = await asyncio.to_thread(clear_working_files, folder_paths.get_output_directory())
+        except OSError:
+            raise web.HTTPInternalServerError(text='The output folder cannot be accessed') from None
+        return web.json_response(dict(bytes=result['bytes']), headers={'Cache-Control': 'no-store'})
+
+    @server.routes.post('/freevideo/library/working-files/clear')
+    async def clear_working(request):
+        try:
+            result = await asyncio.to_thread(clear_working_files, folder_paths.get_output_directory(), apply=True)
+        except OSError:
+            raise web.HTTPInternalServerError(text='The output folder cannot be accessed') from None
+        return web.json_response(dict(freed_bytes=result['freed_bytes'], left=result['left']),
+                                 headers={'Cache-Control': 'no-store'})
+
+    @server.routes.get('/freevideo/library/thumbnail')
+    async def preview(request):
+        output, identity = folder_paths.get_output_directory(), request.query.get('id')
+        try:
+            # A thumbnail made before is sent at once; only making one waits for the others being made.
+            data = await asyncio.to_thread(thumbnail, output, identity, cached=True)
+            if data is None:
+                async with thumbnails:
+                    data = await asyncio.to_thread(thumbnail, output, identity)
+        except Exception:
+            # The full video remains playable if its thumbnail is missing.
+            raise web.HTTPNotFound(text='Thumbnail unavailable', headers={'Cache-Control': 'no-store'}) from None
+        tag = '"%s"' % hashlib.sha256(data).hexdigest()[:32]
+        # Checked again on every use (an unchanged one answers 304 with no body), so no browser, on this computer or
+        # another, keeps showing a deleted creation's picture.
+        headers = {'Cache-Control': 'private, no-cache', 'ETag': tag}
+        if request.headers.get('If-None-Match') == tag:
+            return web.Response(status=304, headers=headers)
+        return web.Response(body=data, content_type='image/jpeg', headers=headers)
+
+    picture_thumbnails = asyncio.Semaphore(2)
+
+    @server.routes.get('/freevideo/library/picture-thumbnail')
+    async def picture_preview(request):
+        from .work_thumbnails import PICTURE, cached_picture, picture_thumbnail, release
+        folder, file = folder_paths.get_input_directory(), request.query.get('file')
+        try:
+            found = await asyncio.to_thread(cached_picture, folder, file)
+            if found is None:
+                async with picture_thumbnails:
+                    found = await asyncio.to_thread(picture_thumbnail, folder, file)
+        except Exception:
+            # Asked for a picture that is gone: its small copy goes too. The grid shows the picture itself otherwise.
+            leaf = file.rpartition('/')[2] if isinstance(file, str) else ''
+            if PICTURE.fullmatch(leaf) and file == 'freevideo-image/' + leaf:
+                await asyncio.to_thread(lambda: os.path.lexists(Path(folder) / 'freevideo-image' / leaf) or release('image:' + leaf, folder))
+            raise web.HTTPNotFound(text='Thumbnail unavailable', headers={'Cache-Control': 'no-store'}) from None
+        data, tag, size = found
+        # Checked again on every use, as a video's thumbnail is: a deleted picture's small copy stays in no browser.
+        headers = {'Cache-Control': 'private, no-cache', 'ETag': tag}
+        if size:
+            # The picture's own size, for the library's labels, without loading the picture.
+            headers.update({'X-Picture-Width': str(size[0]), 'X-Picture-Height': str(size[1])})
+        if request.headers.get('If-None-Match') == tag:
+            return web.Response(status=304, headers=headers)
+        return web.Response(body=data, content_type='image/webp', headers=headers)
+
+    @server.routes.post('/freevideo/library/open-folder')
+    async def open_folder(request):
+        # It opens a window on the computer running FreeVideo, so only that computer may ask.
+        # The custom header keeps other websites from posting to it without the browser's pre-check.
+        if request.remote not in ('127.0.0.1', '::1') or request.headers.get('X-FreeVideo-Library') != '1':
+            raise web.HTTPForbidden(text='Open the folder on the computer that runs FreeVideo')
+        try:
+            body = await request.json()
+            identity = body.get('id') if isinstance(body, dict) else None
+            folder = await asyncio.to_thread(video_folder, folder_paths.get_output_directory(), identity)
+        except (ValueError, TypeError) as error:
+            raise web.HTTPBadRequest(text=str(error)) from error
+        except OSError:
+            raise web.HTTPNotFound(text='Saved video unavailable') from None
+        opened = await asyncio.to_thread(show_folder, folder)
+        return web.json_response(dict(opened=True) if opened else dict(opened=False, folder=str(folder)),
+                                 headers={'Cache-Control': 'no-store'})
+
+    @server.routes.post('/freevideo/library/delete')
+    async def delete(request):
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(delete_video, folder_paths.get_output_directory(),
+                                             body.get('id') if isinstance(body, dict) else None,
+                                             queue=getattr(server, 'prompt_queue', None))
+        except DeleteRefused as error:
+            return web.json_response(dict(deleted=False, reason=error.reason, kept=error.kept[:20]), status=409)
+        except FileNotFoundError:
+            raise web.HTTPNotFound(text='Saved video unavailable') from None
+        except OSError as error:
+            # Still there but could not be removed: another program holds it, or the folder is protected.
+            return web.json_response(dict(deleted=False, reason=file_reason(error, write=True)), status=500)
+        except (ValueError, TypeError):
+            raise web.HTTPNotFound(text='Saved video unavailable') from None
+        return web.json_response(dict(result, deleted=True))
+
+    @server.routes.post('/freevideo/library/delete-batch')
+    async def delete_batch(request):
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(delete_videos, folder_paths.get_output_directory(),
+                                             body.get('ids') if isinstance(body, dict) else None,
+                                             queue=getattr(server, 'prompt_queue', None),
+                                             batch=body.get('batch') if isinstance(body, dict) else None,
+                                             extend=body.get('extend') or () if isinstance(body, dict) else ())
+        except (DeleteRefused, ValueError, TypeError):
+            raise web.HTTPBadRequest(text='Invalid selection') from None
+        except OSError as error:
+            return web.json_response(dict(reason=file_reason(error, write=True)), status=500)
+        return web.json_response(result)
+
+    @server.routes.post('/freevideo/library/undo')
+    async def undo(request):
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(undo_deleted, folder_paths.get_output_directory(),
+                                             body.get('batch') if isinstance(body, dict) else None)
+        except UndoBusy:
+            return web.json_response(dict(restored=[], lost=[], busy=True), status=409)
+        except (OSError, ValueError, TypeError):
+            return web.json_response(dict(restored=[], lost=[], expired=True), status=410)
+        return web.json_response(result)
+
+    @server.routes.post('/freevideo/library/undo-state')
+    async def undo_status(request):
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(undo_state, folder_paths.get_output_directory(),
+                                             body.get('batches') if isinstance(body, dict) else None)
+        except (OSError, ValueError, TypeError):
+            raise web.HTTPBadRequest(text='Invalid selection') from None
+        return web.json_response(dict(batches=result), headers={'Cache-Control': 'no-store'})
+
+    @server.routes.post('/freevideo/library/hold')
+    async def hold(request):
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(hold_deleted, folder_paths.get_output_directory(),
+                                             body.get('batches') if isinstance(body, dict) else None,
+                                             running=body.get('running', False) if isinstance(body, dict) else None)
+        except (OSError, ValueError, TypeError):
+            raise web.HTTPBadRequest(text='Invalid selection') from None
+        return web.json_response(dict(batches=result), headers={'Cache-Control': 'no-store'})
+
+    @server.routes.post('/freevideo/library/sizes')
+    async def sizes(request):
+        try:
+            body = await request.json()
+            result = await asyncio.to_thread(folder_sizes, folder_paths.get_output_directory(),
+                                             body.get('ids') if isinstance(body, dict) else None)
+        except (OSError, ValueError, TypeError):
+            raise web.HTTPBadRequest(text='Invalid selection') from None
+        return web.json_response(dict(sizes=result), headers={'Cache-Control': 'no-store'})
+
+    @server.routes.post('/freevideo/library/download-zip')
+    async def download_zip(request):
+        # One zip of several works. The page posts a form (so the browser streams the answer straight to disk) with
+        # the choice in its ``payload`` field; a JSON body is read the same way.
+        try:
+            if request.content_type == 'application/json':
+                body = await request.json()
+            else:
+                body = json.loads((await request.post()).get('payload'))
+            if not isinstance(body, dict):
+                raise ValueError('Invalid selection')
+            output, source = folder_paths.get_output_directory(), folder_paths.get_input_directory()
+            plan, left = await asyncio.to_thread(zip_plan, output, source, body.get('items'))
+        except (OSError, ValueError, TypeError):
+            raise web.HTTPBadRequest(text='Invalid selection') from None
+        if not plan:
+            raise web.HTTPNotFound(text='Saved works unavailable')
+        if body.get('check') is True:
+            # What the page asks before posting the form: the answer to a form lands in a hidden frame, where an error
+            # would be seen by no one.
+            return web.json_response(dict(ready=len(plan), skipped=len(left)), headers={'Cache-Control': 'no-store'})
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        response = web.StreamResponse(headers={'Content-Type': 'application/zip', 'Cache-Control': 'private, no-store',
+                                               'Content-Disposition': 'attachment; filename="FreeVideo_%s.zip"' % stamp,
+                                               'X-FreeVideo-Skipped': str(len(left))})
+        copies = []
+        pieces = zip_stream(output, source, plan, left, workflow=body.get('workflow') is True, copies=copies)
+        try:
+            await response.prepare(request)
+            while True:
+                chunk = await asyncio.to_thread(next, pieces, None)
+                if chunk is None:
+                    break
+                if chunk:
+                    await response.write(chunk)
+            await response.write_eof()
+        finally:
+            # Also when the browser cancelled: the copies without the prompt and workflow are deleted.
+            for _ in range(600):
+                try:
+                    await asyncio.to_thread(pieces.close)
+                    break
+                except ValueError:  # still reading its last piece in another thread
+                    await asyncio.sleep(0.1)
+            else:
+                logging.warning('FreeVideo is still preparing a video for a cancelled zip download; its copy is removed when done.')
+            for copy in copies:
+                try:
+                    await asyncio.to_thread(copy.unlink, missing_ok=True)
+                except OSError:
+                    pass  # Still open (Windows): the generator removes it itself once it returns.
+        return response
+
+    @server.routes.get('/freevideo/library/download')
+    async def download(request):
+        headers = {'Content-Type': 'video/mp4', 'Cache-Control': 'private, no-store'}
+        if request.method == 'HEAD':
+            # Whether the video can be read; nothing is copied for the check.
+            try:
+                path = await asyncio.to_thread(_video, folder_paths.get_output_directory(), request.query.get('id'))
+                await asyncio.to_thread(_report, path)
+                if not path.stat().st_size:
+                    raise ValueError('Video is empty')
+            except (OSError, ValueError, TypeError):
+                raise web.HTTPNotFound(text='Saved video unavailable') from None
+            return web.Response(headers=headers)
+        try:
+            path, name, copy = await asyncio.to_thread(video_download, folder_paths.get_output_directory(),
+                                                       request.query.get('id'), workflow=request.query.get('workflow') == '1')
+        except (OSError, ValueError, TypeError):
+            raise web.HTTPNotFound(text='Saved video unavailable') from None
+        headers['Content-Disposition'] = 'attachment; filename="%s"' % name
+        if copy is None:
+            return web.FileResponse(path, headers=headers)
+        # The copy without the prompt and workflow is sent once and deleted, whether or not the download finished.
+        response = web.StreamResponse(headers=dict(headers, **{'Content-Length': str(copy.stat().st_size)}))
+        try:
+            await response.prepare(request)
+            with open(copy, 'rb') as stream:
+                while True:
+                    chunk = await asyncio.to_thread(stream.read, 1024 * 1024)
+                    if not chunk:
+                        break
+                    await response.write(chunk)
+            await response.write_eof()
+        finally:
+            await asyncio.to_thread(copy.unlink, missing_ok=True)
+        return response
